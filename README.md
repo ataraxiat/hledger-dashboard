@@ -1,22 +1,18 @@
 # hledger Dashboard
 
-An interactive web dashboard for [hledger](https://hledger.org) plain-text accounting journals. Visualises income, expenses, and savings as a live Sankey flow diagram and a monthly trend bar chart. Data is fetched on demand from the `hledger` CLI. This project was written in it's entirety by an LLM.
+An interactive web dashboard for [hledger](https://hledger.org) plain-text accounting journals. Visualises income, expenses, and savings as a live Sankey flow diagram and a monthly trend bar chart. Data is fetched on demand from the `hledger` CLI. This project was mostly written by an LLM.
 
 ---
 
 ## Features
 
-**Sankey diagram** — models the full flow of money through your accounts for a chosen period: income sources → checking account → savings and expense categories. Sub-accounts are shown up to four levels deep, controlled by the Depth dropdown.
+**Sankey diagram** — models the full flow of money through your accounts for a chosen period: income sources → checking account → savings and expense categories. Sub-account depth is configurable.
 
 **Monthly trend chart** — grouped bar chart of total income vs. total expenses for every month in the selected period.
 
-**Flexible period selection** — a preset dropdown covers the most common ranges (this year, last quarter, last 12 months, etc.). Custom date ranges can be entered via date pickers, each with a one-click *Today* shortcut. The From and To fields can be used independently or together; setting *only* a To date is blocked with an explanation (see [Guardrails](#guardrails)).
-
-**Debit account reconciliation** — the net period change in your checking/debit account is factored into the Sankey so that inflows always equal outflows, even when prior-period balances fund spending in the current period.
+**Flexible period selection** — a dropdown covers common ranges (this year, last quarter, etc.). Custom date ranges can be entered via date pickers. Setting *only* a To date is forbidden (see [Guardrails](#guardrails)).
 
 **Configurable account names** — all four account prefixes are stored in `config.json` and set interactively by the installer. No code editing required.
-
-**Dark theme** — colour-coded by account type (income: blue, savings: mint, expenses: coral, debit adjustment: amber). The plot area maintains a 3:2 aspect ratio and fills the available viewport height.
 
 ---
 
@@ -116,23 +112,7 @@ You can also edit `config.json` directly:
 
 ---
 
-## Project structure
-
-```
-hledger-dashboard/
-├── app.py               # Dash application (single file)
-├── config.json          # Account names — created by install.sh
-├── requirements.txt     # Python dependencies
-├── install.sh           # Setup and configuration script
-└── assets/
-    └── dashboard.css    # Responsive plot sizing — created by install.sh
-```
-
-`config.json` and `assets/dashboard.css` are generated files. If you are pushing to a public repository, add `config.json` to `.gitignore` to avoid committing personal account names.
-
----
-
-## How the Sankey works
+## How Sankey?
 
 hledger uses double-entry accounting, where income is recorded as a negative balance. The dashboard flips income signs before plotting.
 
@@ -159,9 +139,9 @@ The dashboard makes a separate call for your debit account using `hledger balanc
 | Account grew | Income was retained in checking | `income (total)` → `debit (retained)` |
 | No change | Fully accounted for by income | No extra node |
 
-<!-- ### Guardrails
+### Guardrails
 
-Setting a *To* date without a *From* date is blocked with a warning. `hledger balance --end DATE` returns cumulative totals from the very beginning of the ledger — including opening balances from prior years — rather than the activity within a period. The correct alternatives are to use both a From and To date, or to use the Period dropdown. -->
+Setting a *To* date without a *From* date is blocked with a warning. `hledger balance --end DATE` returns cumulative totals from the very beginning of the ledger — including opening balances from prior years — rather than the activity within a period. The correct alternatives are to use both a From and To date, or to use the Period dropdown.
 
 ---
 
@@ -171,10 +151,6 @@ Setting a *To* date without a *From* date is blocked with a warning. `hledger ba
 
 **No authentication** — the server is intended for local or trusted-network use only. Do not expose it to the public internet.
 
-**No persistence** — the dashboard holds no state between page loads. Every Refresh is a fresh set of `hledger` subprocess calls.
-
-**Depth and the debit account** — the account depth setting applies to income, expenses, and savings queries. The debit account query intentionally omits the depth flag so it always targets the single named account rather than being rolled up to a parent.
-
 ---
 
 ## Built with
@@ -182,3 +158,4 @@ Setting a *To* date without a *From* date is blocked with a warning. `hledger ba
 - [hledger](https://hledger.org) — plain-text accounting
 - [Plotly Dash](https://dash.plotly.com) — Python web framework for data apps
 - [pandas](https://pandas.pydata.org) — CSV parsing and aggregation
+
