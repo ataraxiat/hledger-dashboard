@@ -35,7 +35,7 @@ An interactive web dashboard for [hledger](https://hledger.org) plain-text accou
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/hledger-dashboard.git
+git clone https://github.com/ataraxiat/hledger-dashboard.git
 cd hledger-dashboard
 chmod +x install.sh
 ./install.sh
