@@ -1,4 +1,4 @@
-# hledger Finance Dashboard
+# hledger Dashboard
 
 An interactive web dashboard for [hledger](https://hledger.org) plain-text accounting journals. Visualises income, expenses, and savings as a live Sankey flow diagram and a monthly trend bar chart. Data is fetched on demand from the `hledger` CLI. This project was written in it's entirety by an LLM.
 

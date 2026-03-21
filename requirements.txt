@@ -1,0 +1,6 @@
+# hledger Finance Dashboard — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+dash>=2.17.0
+plotly>=5.22.0
+pandas>=2.0.0
