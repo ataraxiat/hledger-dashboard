@@ -1,0 +1,133 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   hledger Dashboard — dark theme + responsive graph sizing
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Remove the browser default body margin that causes a white border */
+html, body {
+    margin: 0;
+    padding: 0;
+    background-color: #151313;
+}
+
+/* ── Dash 4 design-token overrides ───────────────────────────────────────────
+   Dash 4 reads all component colours from --Dash-* CSS variables.
+   Overriding them here propagates to every Dropdown, DatePicker, etc.        */
+:root {
+    --Dash-Fill-Inverse-Strong:     #1e1b1b;   /* component background        */
+    --Dash-Fill-Interactive-Strong: #3b6fd4;   /* accent / focus / selected   */
+    --Dash-Fill-Interactive-Weak:   #252222;   /* hover background            */
+    --Dash-Fill-Disabled:           #2e2b2b;   /* separator / disabled fill   */
+    --Dash-Text-Strong:             #d8d8d8;   /* primary text                */
+    --Dash-Text-Weak:               #999999;   /* secondary / muted text      */
+    --Dash-Text-Disabled:           #666666;   /* placeholder / disabled text */
+    --Dash-Stroke-Strong:           #3a3737;   /* borders                     */
+    --Dash-Shading-Strong:          rgba(0,0,0,0.6);
+    --Dash-Shading-Weak:            rgba(0,0,0,0.3);
+    --Dash-Spacing:                 4px;
+
+    --ctrl-h: 268px;
+}
+
+/* ── Dropdown: remove the inline style override that fights the tokens ────────
+   The Python code passes style={backgroundColor, color} on the outer wrapper,
+   which lands on a div around the actual .dash-dropdown button.  Force the
+   button itself to inherit those tokens.                                       */
+.dash-dropdown,
+.dash-dropdown-content {
+    color:      var(--Dash-Text-Strong) !important;
+    background: var(--Dash-Fill-Inverse-Strong) !important;
+}
+
+/* Selected value and trigger icon */
+.dash-dropdown-value,
+.dash-dropdown-trigger-icon,
+.dash-dropdown-value-count {
+    color: var(--Dash-Text-Strong) !important;
+    fill:  var(--Dash-Text-Strong) !important;
+}
+
+/* Option rows */
+.dash-dropdown-option {
+    color:            var(--Dash-Text-Strong) !important;
+    background-color: var(--Dash-Fill-Inverse-Strong) !important;
+}
+.dash-dropdown-option:hover,
+.dash-dropdown-option[data-active='true'] {
+    background-color: var(--Dash-Fill-Interactive-Weak) !important;
+    color:            var(--Dash-Text-Strong) !important;
+}
+
+/* Search box inside the dropdown popup */
+.dash-dropdown-search-container,
+.dash-dropdown-search-container input {
+    background: var(--Dash-Fill-Inverse-Strong) !important;
+    color:      var(--Dash-Text-Strong) !important;
+    border-color: var(--Dash-Stroke-Strong) !important;
+}
+.dash-dropdown-search-container input::placeholder {
+    color: var(--Dash-Text-Disabled) !important;
+}
+
+/* ── DatePicker ───────────────────────────────────────────────────────────── */
+.dash-datepicker-input-wrapper,
+.dash-datepicker-content {
+    background: var(--Dash-Fill-Inverse-Strong) !important;
+    border-color: var(--Dash-Stroke-Strong) !important;
+    color: var(--Dash-Text-Strong) !important;
+}
+
+.dash-datepicker-input {
+    background-color: var(--Dash-Fill-Inverse-Strong) !important;
+    color: var(--Dash-Text-Strong) !important;
+}
+
+/* Calendar popup */
+.dash-datepicker-calendar th,
+.dash-datepicker-calendar td {
+    color: var(--Dash-Text-Weak) !important;
+}
+.dash-datepicker-calendar td.dash-datepicker-calendar-date-inside {
+    color: var(--Dash-Text-Strong) !important;
+}
+.dash-datepicker-calendar td:hover {
+    background-color: var(--Dash-Fill-Interactive-Weak) !important;
+}
+
+/* Month/year navigation header text */
+.dash-datepicker-content button,
+.dash-datepicker-content select {
+    color:      var(--Dash-Text-Strong) !important;
+    background: var(--Dash-Fill-Inverse-Strong) !important;
+    border-color: var(--Dash-Stroke-Strong) !important;
+}
+
+/* Caret and clear icons */
+.dash-datepicker-caret-icon,
+.dash-datepicker-clear {
+    color: var(--Dash-Text-Strong) !important;
+    fill:  var(--Dash-Text-Strong) !important;
+}
+
+/* ── Tab strip ───────────────────────────────────────────────────────────────
+   The active tab border-bottom is set inline and needs a nudge to stay dark   */
+.dash-tab {
+    background-color: #1e1b1b !important;
+    color: #999999 !important;
+}
+.dash-tab--selected {
+    color: #d8d8d8 !important;
+    background-color: #151313 !important;
+}
+
+/* ── Responsive graph sizing (3:2 aspect ratio cap) ─────────────────────── */
+.graph-frame {
+    height: calc(100vh - var(--ctrl-h));
+    width: min(100%, calc((100vh - var(--ctrl-h)) * 1.5));
+    margin: 0 auto;
+}
+
+.graph-frame .js-plotly-plot,
+.graph-frame .plot-container {
+    height: 100% !important;
+    width:  100% !important;
+}

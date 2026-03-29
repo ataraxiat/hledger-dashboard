@@ -2,7 +2,6 @@ venv/
 config.json
 __pycache__/
 *.pyc
-assets/dashboard.css
 .DS_Store
 hledger_dash.code-workspace
 CLAUDE.md
