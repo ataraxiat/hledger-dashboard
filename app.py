@@ -1410,8 +1410,6 @@ app.layout = html.Div(
                     selected_style=_tab_selected_style(),
                     children=[
                         html.Div(
-                            # style={"width": "100%", "overflowX": "auto"},
-                            # className="graph-frame",
                             children=[
                                 html.Div(
                                     style={
