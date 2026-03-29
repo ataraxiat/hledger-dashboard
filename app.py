@@ -88,6 +88,13 @@ BORDER = "#2e2b2b"
 
 HLEDGER_BIN = os.environ.get("HLEDGER_BIN", "hledger")
 
+# ── Weekly plot formatting ────────────────────────────────────────────────–––––
+WEEKLY_TITLE_FONT = dict(size=16, color=FONT_COLOR)
+WEEKLY_AX_TITLE_FONT = dict(size=15, color=FONT_COLOR)
+WEEKLY_TICK_FONT = dict(size=14, color=FONT_COLOR)
+WEEKLY_SMALL_TICK_FONT = dict(size=12, color=FONT_COLOR)
+
+
 # ── Data helpers ───────────────────────────────────────────────────────────────
 
 
@@ -175,16 +182,16 @@ def week_col_to_date(col: str, to_iso: bool = False) -> str:
         'YYYY-Www' input: resolved to the Monday of that ISO week.
         'YYYY-MM-DD' input: returned unchanged (trimmed to 10 chars).
 
-    to_iso=True             →  'YYYY-Www'
+    to_iso=True             →  'YY-Www'
         'YYYY-MM-DD' input: converted to ISO week label for axis display.
         'YYYY-Www' input: returned unchanged.
     """
     s = str(col).strip()
     if to_iso:
         if re.match(r"^\d{4}-W\d{2}$", s):
-            return s
+            return datetime.strptime(s + "-1", "%G-W%V-%u").strftime("%g-W%V")
         try:
-            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%G-W%V")
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%g-W%V")
         except ValueError:
             return s
     else:
@@ -616,17 +623,44 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
 
     cats = list(weekly_data.keys())
     n = len(cats)
-    n_cols = min(4, n)
+
+    # Sort by max spend descending so rows group categories of similar scale
+    cat_max = {cat: max(weekly_data[cat]["amounts"], default=0) for cat in cats}
+    cats = sorted(cats, key=lambda c: cat_max[c], reverse=True)
+
+    # ── Grid layout: minimise empty cells (n_cols*n_rows - n), prefer more
+    # columns on ties so the figure stays landscape rather than tall. ──
+    _plot_w = 1200 - 72  # assumed usable width (px); 72 = l+r figure margins
+    _min_sw = 130  # minimum readable subplot width (px)
+    _max_cols = max(1, int(_plot_w / _min_sw))  # hard ceiling (~8 at 1200 px)
+    _ideal_nc = math.ceil(math.sqrt(n))
+    _lo = max(1, _ideal_nc - 2)
+    _hi = min(n, min(_ideal_nc * 2, _max_cols))
+
+    best_empty, best_n_cols = n + 1, _ideal_nc
+    for _nc in range(_lo, _hi + 1):
+        _nr = math.ceil(n / _nc)
+        _empty = _nc * _nr - n
+        if _empty < best_empty or (_empty == best_empty and _nc > best_n_cols):
+            best_empty = _empty
+            best_n_cols = _nc
+
+    n_cols = best_n_cols
     n_rows = math.ceil(n / n_cols)
-    height = n_rows * 210 + 90
+
+    # ── Figure height: scale so each subplot hits aspect ratio ~1.2:1 (w:h),
+    # which is comfortably within the [1:1, 3:2] allowed band. ──
+    _subplot_w = _plot_w / n_cols
+    _subplot_h = _subplot_w / 1.2
+    fig_height = int(n_rows * _subplot_h + 128)  # 128 px ≈ top + bottom margins
     short_names = [c.split(":")[-1] for c in cats]
 
     fig = make_subplots(
         rows=n_rows,
         cols=n_cols,
         subplot_titles=short_names,
-        shared_xaxes=True,
-        shared_yaxes=False,
+        shared_xaxes=False,
+        shared_yaxes=True,
         vertical_spacing=max(0.06, 0.5 / n_rows),
         horizontal_spacing=0.02,
     )
@@ -668,31 +702,42 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
             col=c,
         )
 
+    # ── Per-row shared y-axis range ──────────────────────────────────────────
+    # Categories are sorted by max spend, so each row spans a similar scale.
+    # Set an identical range for every subplot in the row so tick labels appear
+    # only on the leftmost cell without overlapping its neighbours.
+    for _r in range(n_rows):
+        _row_cats = cats[_r * n_cols : (_r + 1) * n_cols]
+        _row_max = max((cat_max[c] for c in _row_cats), default=0) * 1.1 or 1
+        for _c in range(1, len(_row_cats) + 1):
+            fig.update_yaxes(range=[0, _row_max], row=_r + 1, col=_c)
+
     fig.update_annotations(font=dict(color=FONT_COLOR, size=11))
     fig.update_xaxes(
-        tickfont=dict(size=8, color=FONT_COLOR),
-        tickangle=45,
+        tickfont=WEEKLY_SMALL_TICK_FONT,
+        tickangle=35,
         gridcolor=BORDER,
         linecolor=BORDER,
         showgrid=True,
+        automargin=True,
     )
     fig.update_yaxes(
-        tickfont=dict(size=8, color=FONT_COLOR),
+        tickfont=WEEKLY_SMALL_TICK_FONT,
         gridcolor=BORDER,
         linecolor=BORDER,
-        rangemode="tozero",
         tickprefix="$",
+        automargin=True,
     )
     fig.update_layout(
         title=dict(
             text=f"Weekly expenses by category — {period_label}",
-            font=dict(size=16, color=FONT_COLOR),
+            font=WEEKLY_TITLE_FONT,
         ),
-        height=height,
+        height=fig_height,
         paper_bgcolor=BG,
         plot_bgcolor=BG,
-        font=dict(family="Inter, Arial, sans-serif", size=10, color=FONT_COLOR),
-        margin=dict(l=48, r=24, t=80, b=48),
+        font=dict(family="Inter, Arial, sans-serif"),  # size=10, color=FONT_COLOR
+        margin=dict(r=48, t=48),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -751,8 +796,8 @@ def build_heatmap_figure(weekly_data: dict, period_label: str) -> go.Figure:
             ],
             showscale=True,
             colorbar=dict(
-                title=dict(text="($)", font=dict(color=FONT_COLOR, size=11)),
-                tickfont=dict(color=FONT_COLOR, size=10),
+                title=dict(text="($)", font=WEEKLY_AX_TITLE_FONT),
+                tickfont=WEEKLY_TICK_FONT,
                 bgcolor=CARD_BG,
                 bordercolor=BORDER,
                 borderwidth=1,
@@ -764,22 +809,20 @@ def build_heatmap_figure(weekly_data: dict, period_label: str) -> go.Figure:
     )
 
     fig.update_layout(
-        title=dict(
-            text=f"Spend heatmap — {period_label}", font=dict(size=16, color=FONT_COLOR)
-        ),
+        title=dict(text=f"Spend heatmap — {period_label}", font=WEEKLY_TITLE_FONT),
         height=height,
         paper_bgcolor=BG,
         plot_bgcolor=BG,
-        font=dict(family="Inter, Arial, sans-serif", size=11, color=FONT_COLOR),
+        font=dict(family="Inter, Arial, sans-serif"),  # size=11, color=FONT_COLOR
         margin=dict(l=110, r=80, t=64, b=80),
         xaxis=dict(
-            tickfont=dict(size=10, color=FONT_COLOR),
+            tickfont=WEEKLY_TICK_FONT,
             gridcolor=BORDER,
             linecolor=BORDER,
-            tickangle=45,
+            tickangle=35,
             side="bottom",
         ),
-        yaxis=dict(tickfont=dict(size=11, color=FONT_COLOR), autorange="reversed"),
+        yaxis=dict(tickfont=WEEKLY_TICK_FONT, autorange="reversed"),
     )
     return fig
 
@@ -981,8 +1024,8 @@ def build_strip_figure(
     # ── Axis builders ──────────────────────────────────────────────────────────
     def spend_axis() -> dict:
         base = dict(
-            title=dict(text="spend ($)", font=dict(color=FONT_COLOR, size=16)),
-            tickfont=dict(color=FONT_COLOR, size=14),
+            title=dict(text="spend ($)", font=WEEKLY_AX_TITLE_FONT),
+            tickfont=WEEKLY_TICK_FONT,
             gridcolor=BORDER,
             linecolor=BORDER,
             zeroline=True,
@@ -1002,7 +1045,7 @@ def build_strip_figure(
 
     def category_axis() -> dict:
         return dict(
-            tickfont=dict(color=FONT_COLOR, size=14),
+            tickfont=WEEKLY_TICK_FONT,
             gridcolor=BORDER,
             linecolor=BORDER,
             autorange="reversed",
@@ -1011,12 +1054,12 @@ def build_strip_figure(
     fig.update_layout(
         title=dict(
             text=f"Weekly Spending Distribution — {period_label}{scale_label}",
-            font=dict(size=16, color=FONT_COLOR),
+            font=WEEKLY_AX_TITLE_FONT,
         ),
         autosize=True,
         paper_bgcolor=BG,
         plot_bgcolor=BG,
-        font=dict(family="Inter, Arial, sans-serif", size=16, color=FONT_COLOR),
+        font=dict(family="Inter, Arial, sans-serif"),  # size=16, color=FONT_COLOR
         margin=dict(l=110, r=40, t=64, b=60),
         violingap=0.2,
         violingroupgap=0.1,
@@ -1105,7 +1148,7 @@ STYLE_STATUS = {
     "whiteSpace": "pre-wrap",
     "minHeight": "36px",
     "margin": "0",
-    "flex": "0 0 33.333%",
+    "flex": "0 0 50%",
     "alignSelf": "stretch",
 }
 STYLE_ERROR = {**STYLE_STATUS, "color": "#ff7c6e", "border": "1px solid #7a2a20"}
@@ -1370,14 +1413,17 @@ app.layout = html.Div(
                     selected_style=_tab_selected_style(),
                     children=[
                         html.Div(
-                            # style={"width": "100%", "overflowX": "auto"},
-                            className="graph-frame",
+                            style={"width": "100%", "overflowX": "auto"},
+                            # className="graph-frame",
                             children=[
                                 dcc.Graph(
                                     id="sm-graph",
                                     figure=empty_sm_figure(),
                                     config={"displayModeBar": True, "responsive": True},
-                                    style={"height": "100%", "width": "100%"},
+                                    style={
+                                        # "height": "calc(100vh - 200px)",
+                                        "width": "100%",
+                                    },
                                 ),
                             ],
                         ),
@@ -1391,13 +1437,16 @@ app.layout = html.Div(
                     children=[
                         html.Div(
                             # style={"width": "100%", "overflowX": "auto"},
-                            className="graph-frame",
+                            # className="graph-frame",
                             children=[
                                 dcc.Graph(
                                     id="hm-graph",
                                     figure=empty_hm_figure(),
                                     config={"displayModeBar": True, "responsive": True},
-                                    style={"height": "100%", "width": "100%"},
+                                    style={
+                                        "height": "100vh",
+                                        "width": "100%",
+                                    },
                                 ),
                             ],
                         ),
@@ -1440,7 +1489,7 @@ app.layout = html.Div(
                                     responsive=True,
                                     style={
                                         "width": "100%",
-                                        "height": "calc(100vh - 200px)",
+                                        "height": "100vh",
                                     },
                                 ),
                             ],
