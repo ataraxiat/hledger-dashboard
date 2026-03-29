@@ -33,7 +33,7 @@ done
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║       hledger Dashboard — installer                  ║"
+echo "║       hledger Finance Dashboard — installer          ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
