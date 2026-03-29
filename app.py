@@ -86,10 +86,27 @@ BG = "#151313"
 CARD_BG = "#1e1b1b"
 BORDER = "#2e2b2b"
 
+# Rotating palette for parent expense categories (violin plot colour-coding).
+# All entries use alpha 0.95 so .replace("0.95", "<alpha>") works uniformly.
+PARENT_CATEGORY_COLORS = [
+    "rgba(100, 160, 255, 0.95)",  # sky blue
+    "rgba( 80, 220, 160, 0.95)",  # teal
+    "rgba(255, 200,  60, 0.95)",  # amber
+    "rgba(200,  90, 255, 0.95)",  # violet
+    "rgba( 60, 210, 240, 0.95)",  # cyan
+    "rgba(255, 130,  50, 0.95)",  # orange
+    "rgba(240,  80, 130, 0.95)",  # rose
+    "rgba(120, 240,  90, 0.95)",  # lime
+    "rgba(255, 220, 120, 0.95)",  # light gold
+    "rgba(150, 130, 255, 0.95)",  # lavender
+    "rgba( 90, 200, 200, 0.95)",  # sea-green
+    "rgba(255, 160, 180, 0.95)",  # salmon
+]
+
 HLEDGER_BIN = os.environ.get("HLEDGER_BIN", "hledger")
 
 # ── Weekly plot formatting ────────────────────────────────────────────────–––––
-WEEKLY_TITLE_FONT = dict(size=16, color=FONT_COLOR)
+WEEKLY_TITLE_FONT = dict(size=16, color=FONT_COLOR, weight="bold")
 WEEKLY_AX_TITLE_FONT = dict(size=15, color=FONT_COLOR)
 WEEKLY_TICK_FONT = dict(size=14, color=FONT_COLOR)
 WEEKLY_SMALL_TICK_FONT = dict(size=12, color=FONT_COLOR)
@@ -630,7 +647,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
 
     # ── Grid layout: minimise empty cells (n_cols*n_rows - n), prefer more
     # columns on ties so the figure stays landscape rather than tall. ──
-    _plot_w = 1200 - 72  # assumed usable width (px); 72 = l+r figure margins
+    _plot_w = 1200  # assumed usable width (px); 72 = l+r figure margins
     _min_sw = 130  # minimum readable subplot width (px)
     _max_cols = max(1, int(_plot_w / _min_sw))  # hard ceiling (~8 at 1200 px)
     _ideal_nc = math.ceil(math.sqrt(n))
@@ -652,7 +669,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
     # which is comfortably within the [1:1, 3:2] allowed band. ──
     _subplot_w = _plot_w / n_cols
     _subplot_h = _subplot_w / 1.2
-    fig_height = int(n_rows * _subplot_h + 128)  # 128 px ≈ top + bottom margins
+    fig_height = int(n_rows * _subplot_h)  # 128 px ≈ top + bottom margins
     short_names = [c.split(":")[-1] for c in cats]
 
     fig = make_subplots(
@@ -661,7 +678,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         subplot_titles=short_names,
         shared_xaxes=False,
         shared_yaxes=True,
-        vertical_spacing=max(0.06, 0.5 / n_rows),
+        vertical_spacing=max(0.06, 0.333 / n_rows),
         horizontal_spacing=0.02,
     )
 
@@ -712,7 +729,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         for _c in range(1, len(_row_cats) + 1):
             fig.update_yaxes(range=[0, _row_max], row=_r + 1, col=_c)
 
-    fig.update_annotations(font=dict(color=FONT_COLOR, size=11))
+    fig.update_annotations(font=WEEKLY_AX_TITLE_FONT)
     fig.update_xaxes(
         tickfont=WEEKLY_SMALL_TICK_FONT,
         tickangle=35,
@@ -726,7 +743,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         gridcolor=BORDER,
         linecolor=BORDER,
         tickprefix="$",
-        automargin=True,
+        # automargin=True,
     )
     fig.update_layout(
         title=dict(
@@ -737,7 +754,7 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         paper_bgcolor=BG,
         plot_bgcolor=BG,
         font=dict(family="Inter, Arial, sans-serif"),  # size=10, color=FONT_COLOR
-        margin=dict(r=48, t=48),
+        margin=dict(r=0, t=64),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -831,7 +848,7 @@ def build_strip_figure(
     weekly_data: dict,
     period_label: str,
     orientation: str = "v",
-    scale_mode: str = "transform",
+    scale_mode: str = "linear",
 ) -> go.Figure:
     """
     Violin plot — one trace per expense sub-category (sorted by average descending).
@@ -866,6 +883,22 @@ def build_strip_figure(
         weekly_data.keys(), key=lambda c: weekly_data[c]["average"], reverse=True
     )
     short_names = [c.split(":")[-1] for c in cats]
+
+    # ── Parent-category colour mapping ─────────────────────────────────────────
+    # The expenses account prefix has N parts; the next segment is the "parent".
+    # e.g.  expenses_account="expenses"  →  "expenses:food:groceries" → parent "food"
+    _exp_depth = len(CFG["expenses_account"].split(":"))
+
+    def _get_parent(cat: str) -> str:
+        parts = cat.split(":")
+        return parts[_exp_depth] if len(parts) > _exp_depth else parts[-1]
+
+    _parents_ordered: list[str] = list(dict.fromkeys(_get_parent(c) for c in cats))
+    _parent_color: dict[str, str] = {
+        p: PARENT_CATEGORY_COLORS[i % len(PARENT_CATEGORY_COLORS)]
+        for i, p in enumerate(_parents_ordered)
+    }
+
     # ── Transform helpers ──────────────────────────────────────────────────────
     POWER = 0.3
 
@@ -957,15 +990,22 @@ def build_strip_figure(
         info = weekly_data[cat]
         weeks_lbl = info["weeks"]
         week_dates = info.get("week_dates", info["weeks"])
+        color = _parent_color[_get_parent(cat)]
 
-        # Pair each amount with its display label and ISO date
-        pairs = [
+        # All weeks (including zeros) drive the violin KDE shape and box stats.
+        all_amounts = info["amounts"]
+        t_all = (
+            [float(fwd(v)) for v in all_amounts] if use_nonlinear else list(all_amounts)
+        )
+
+        # Non-zero weeks only are shown as scatter points.
+        nz_pairs = [
             (a, wl, wd)
             for a, wl, wd in zip(info["amounts"], weeks_lbl, week_dates)
             if a != 0
         ]
-        if not pairs:
-            pairs = [
+        if not nz_pairs:
+            nz_pairs = [
                 (
                     0.0,
                     weeks_lbl[0] if weeks_lbl else "?",
@@ -973,51 +1013,80 @@ def build_strip_figure(
                 )
             ]
 
-        raw_amounts = [p[0] for p in pairs]
-        raw_weeks = [p[1] for p in pairs]
-        raw_dates = [p[2] for p in pairs]
-
-        t_amounts = (
-            [float(fwd(v)) for v in raw_amounts] if use_nonlinear else raw_amounts
-        )
+        nz_amounts = [p[0] for p in nz_pairs]
+        nz_weeks = [p[1] for p in nz_pairs]
+        nz_dates = [p[2] for p in nz_pairs]
+        t_nz = [float(fwd(v)) for v in nz_amounts] if use_nonlinear else nz_amounts
 
         # customdata: [original_$, week_label, week_date_ISO]
-        customdata = [
-            [a, wl, wd] for a, wl, wd in zip(raw_amounts, raw_weeks, raw_dates)
+        nz_customdata = [
+            [a, wl, wd] for a, wl, wd in zip(nz_amounts, nz_weeks, nz_dates)
         ]
 
         hover = f"{short}: $%{{customdata[0]:,.0f}} (%{{customdata[1]}})<extra></extra>"
 
+        # Trace 1: violin shape + box computed over ALL weeks (including zeros).
+        # hoveron="points" for nonlinear fires on nothing (points=False), so the
+        # violin body stays non-interactive and avoids showing transformed stats.
         fig.add_trace(
             go.Violin(
-                x=t_amounts if is_h else None,
-                y=t_amounts if not is_h else None,
-                customdata=customdata,
-                hovertemplate=hover,
-                # hoveron="points+violins": violin body hover fires plotly_hover
-                # events so the clientside JS tooltip can intercept and back-convert
-                # transformed values to dollars.  The native violin stats tooltip
-                # is hidden by the JS handler; point hover keeps its hovertemplate.
-                # hoveron="points+violins",
-                hoveron="points" if use_nonlinear else "points+violins",
+                x=t_all if is_h else None,
+                y=t_all if not is_h else None,
+                hoveron="points" if use_nonlinear else "points+violins+kde",
                 name=short,
                 orientation=orientation,
                 side="both",
-                fillcolor=COLOR_EXPENSE.replace("0.95", "0.18"),
-                line=dict(color=COLOR_EXPENSE.replace("0.95", "0.70"), width=1.5),
+                fillcolor=color.replace("0.95", "0.18"),
+                line=dict(color=color.replace("0.95", "0.70"), width=1.5),
                 box_visible=True,
                 box=dict(
-                    fillcolor=COLOR_EXPENSE.replace("0.95", "0.50"),
-                    line=dict(color=COLOR_EXPENSE.replace("0.95", "0.90"), width=1),
+                    fillcolor=color.replace("0.95", "0.50"),
+                    line=dict(color=color.replace("0.95", "0.90"), width=1),
                 ),
                 meanline_visible=True,
                 meanline=dict(color="#d8d8d8", width=1.5),
+                points=False,
+                showlegend=False,
+                spanmode="hard",
+            )
+        )
+        # Trace 2: scatter points for NON-ZERO weeks only, overlaid on the violin.
+        # curve index = 2*i+1; callback resolves category as curve_idx // 2.
+        fig.add_trace(
+            go.Violin(
+                x=t_nz if is_h else None,
+                y=t_nz if not is_h else None,
+                customdata=nz_customdata,
+                hovertemplate=hover,
+                hoveron="points",
+                name=short,
+                orientation=orientation,
+                fillcolor="rgba(0,0,0,0)",
+                line=dict(color="rgba(0,0,0,0)", width=0),
+                box_visible=False,
+                meanline_visible=False,
                 points="all",
                 pointpos=0,
                 jitter=0.4,
-                marker=dict(color="rgba(215,190,170,0.55)", size=6, line=dict(width=0)),
+                marker=dict(
+                    color=color.replace("0.95", "0.60"), size=6, line=dict(width=0)
+                ),
                 showlegend=False,
                 spanmode="hard",
+            )
+        )
+
+    # ── Legend: one invisible scatter per parent category ─────────────────────
+    for parent in _parents_ordered:
+        c = _parent_color[parent]
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(color=c.replace("0.95", "0.85"), size=12, symbol="square"),
+                name=parent,
+                showlegend=True,
             )
         )
 
@@ -1044,25 +1113,40 @@ def build_strip_figure(
         return base
 
     def category_axis() -> dict:
+        # categoryarray pins display order to the sort; autorange="reversed" flips
+        # the axis so the highest-average category appears at the top.
         return dict(
             tickfont=WEEKLY_TICK_FONT,
             gridcolor=BORDER,
             linecolor=BORDER,
             autorange="reversed",
+            categoryorder="array",
+            categoryarray=short_names,
         )
 
     fig.update_layout(
         title=dict(
             text=f"Weekly Spending Distribution — {period_label}{scale_label}",
-            font=WEEKLY_AX_TITLE_FONT,
+            font=WEEKLY_TITLE_FONT,
         ),
         autosize=True,
         paper_bgcolor=BG,
         plot_bgcolor=BG,
         font=dict(family="Inter, Arial, sans-serif"),  # size=16, color=FONT_COLOR
-        margin=dict(l=110, r=40, t=64, b=60),
-        violingap=0.2,
-        violingroupgap=0.1,
+        margin=dict(l=110, r=40, t=80, b=60),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            x=0.5,
+            y=1.0,
+            xanchor="center",
+            yanchor="bottom",
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=FONT_COLOR, size=13),
+        ),
+        violinmode="overlay",
+        violingap=0.1,
+        violingroupgap=False,
         xaxis=spend_axis() if is_h else category_axis(),
         yaxis=category_axis() if is_h else spend_axis(),
     )
@@ -1264,7 +1348,7 @@ app.layout = html.Div(
                                             },
                                             {"label": "Level 4 — detail", "value": 4},
                                         ],
-                                        value=3,
+                                        value=2,
                                         clearable=False,
                                         style={"width": "220px"},
                                     ),
@@ -1413,7 +1497,7 @@ app.layout = html.Div(
                     selected_style=_tab_selected_style(),
                     children=[
                         html.Div(
-                            style={"width": "100%", "overflowX": "auto"},
+                            # style={"width": "100%", "overflowX": "auto"},
                             # className="graph-frame",
                             children=[
                                 dcc.Graph(
@@ -1421,7 +1505,7 @@ app.layout = html.Div(
                                     figure=empty_sm_figure(),
                                     config={"displayModeBar": True, "responsive": True},
                                     style={
-                                        # "height": "calc(100vh - 200px)",
+                                        "height": "100vh",
                                         "width": "100%",
                                     },
                                 ),
@@ -1477,7 +1561,7 @@ app.layout = html.Div(
                                         html.Button(
                                             id="scale-cycle-btn",
                                             n_clicks=0,
-                                            children="Compressed scale",
+                                            children="Linear",
                                             style=STYLE_BTN_NEUTRAL,
                                         ),
                                     ],
@@ -1501,7 +1585,7 @@ app.layout = html.Div(
         # ── Hidden state stores ────────────────────────────────────────────────────
         dcc.Store(id="clear-signal", data=0),
         dcc.Store(id="strip-orientation", data="v"),
-        dcc.Store(id="violin-scale", data="transform"),
+        dcc.Store(id="violin-scale", data="linear"),
         dcc.Store(id="strip-data-store"),
         dcc.Store(id="register-data-store"),
         html.Div(id="_resize-dummy", style={"display": "none"}),
@@ -1751,7 +1835,7 @@ def toggle_orientation(n, current):
     prevent_initial_call=True,
 )
 def cycle_scale(n, current):
-    cycle = ["transform", "log", "linear"]
+    cycle = ["linear", "transform", "log"]
     nxt = cycle[(cycle.index(current) + 1) % len(cycle)]
     return nxt, SCALE_LABELS[nxt]
 
@@ -2009,10 +2093,14 @@ def handle_tx_popup(
     label_to_date = dict(
         zip(any_info["weeks"], any_info.get("week_dates", any_info["weeks"]))
     )
-    # Sorted cats lists (same logic as build functions)
-    cats_unsorted = list(weekly_data.keys())  # sm order
-    cats_sorted = sorted(
-        weekly_data.keys(),  # hm/strip order
+    # Sorted cats lists (must match the order used in the build functions)
+    cats_sm = sorted(  # sm-graph: sorted by max spend desc (matches build_small_multiples_figure)
+        weekly_data.keys(),
+        key=lambda c: max(weekly_data[c]["amounts"], default=0),
+        reverse=True,
+    )
+    cats_sorted = sorted(  # hm/strip-graph: sorted by average desc
+        weekly_data.keys(),
         key=lambda c: weekly_data[c]["average"],
         reverse=True,
     )
@@ -2026,8 +2114,8 @@ def handle_tx_popup(
             pt = sm_click["points"][0]
             curve_idx = pt["curveNumber"]
             cat_idx = curve_idx // 2  # 2 traces per category (bar + avg line)
-            if cat_idx < len(cats_unsorted):
-                account = cats_unsorted[cat_idx]
+            if cat_idx < len(cats_sm):
+                account = cats_sm[cat_idx]
                 week_label = str(pt.get("x", "?"))
                 week_date = label_to_date.get(week_label, week_label)
 
@@ -2044,8 +2132,9 @@ def handle_tx_popup(
         elif triggered == "strip-graph" and strip_click:
             pt = strip_click["points"][0]
             curve_idx = pt["curveNumber"]
-            if curve_idx < len(cats_sorted):
-                account = cats_sorted[curve_idx]
+            cat_idx = curve_idx // 2  # 2 traces per category: violin shape + points
+            if cat_idx < len(cats_sorted):
+                account = cats_sorted[cat_idx]
             # customdata: [original_$, week_label, week_date_ISO]
             cd = pt.get("customdata")
             if cd and len(cd) >= 3:
