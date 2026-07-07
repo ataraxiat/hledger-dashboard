@@ -1,5 +1,5 @@
 """
-hledger Interactive Finance Dashboard
+hledger Interactive Dashboard
 ======================================
 Run:  python app.py   →  open http://127.0.0.1:8050
 
@@ -28,32 +28,58 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
+from dash import (
+    Dash,
+    Input,
+    Output,
+    State,
+    callback_context,
+    dcc,
+    html,
+    no_update,
+    set_props,
+)
 from plotly.subplots import make_subplots
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# ── Config
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
-CONFIG_DEFAULTS: dict[str, str] = {
+CONFIG_DEFAULTS: dict[str, str | int] = {
     "income_account": "income",
     "expenses_account": "expenses",
     "savings_account": "assets:bank:savings",
     "debit_account": "assets:bank:debit",
+    # Import pipeline (txcat → hledger import)
+    "txcat_dir": "~/Accounting/txcat",
+    "hledger_rules_debit": "~/Accounting/bank.debit.csv.rules",
+    "hledger_rules_savings": "~/Accounting/bank.savings.csv.rules",
+    # Bank website for the "no new transactions" prompt
+    "bank_url": "",
+    # Per-account txcat bypass
+    "skip_txcat_debit": False,
+    "skip_txcat_savings": False,
+    # UI defaults
+    "default_depth": 2,
 }
 
 
-def load_config() -> dict[str, str]:
+def load_config() -> dict[str, str | int]:
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
             on_disk = json.load(f)
+        # Backwards compat: old key name
+        if "hledger_rules" in on_disk and "hledger_rules_debit" not in on_disk:
+            on_disk["hledger_rules_debit"] = on_disk.pop("hledger_rules")
         return {**CONFIG_DEFAULTS, **on_disk}
     return dict(CONFIG_DEFAULTS)
 
@@ -77,6 +103,8 @@ COLOR_INCOME = "rgba(112, 148, 255, 0.95)"
 COLOR_SAVINGS = "rgba( 50, 230, 170, 0.95)"
 COLOR_EXPENSE = "rgba(255, 106,  61, 0.95)"
 COLOR_DEBIT = "rgba(200, 160,  80, 0.95)"
+COLOR_INCOME_MEDICAL = "rgba(100, 220, 160, 0.95)"
+COLOR_EXPENSE_MEDICAL = "rgba(240,  80, 130, 0.95)"
 LINK_INCOME = "rgba(110, 160, 255, 0.35)"
 LINK_SAVINGS = "rgba( 50, 230, 170, 0.35)"
 LINK_EXPENSE = "rgba(255, 110,  90, 0.35)"
@@ -105,7 +133,7 @@ PARENT_CATEGORY_COLORS = [
 
 HLEDGER_BIN = os.environ.get("HLEDGER_BIN", "hledger")
 
-# ── Weekly plot formatting ────────────────────────────────────────────────–––––
+# ── Weekly plot formatting ─────────────────────────────────────────────────────
 WEEKLY_TITLE_FONT = dict(size=16, color=FONT_COLOR, weight="bold")
 WEEKLY_AX_TITLE_FONT = dict(size=15, color=FONT_COLOR)
 WEEKLY_TICK_FONT = dict(size=14, color=FONT_COLOR)
@@ -186,6 +214,177 @@ def get_ledger_start_date() -> str | None:
             if len(dates) == 2:
                 return dates[1]
     return None
+
+
+_import_lock = threading.Lock()
+
+# Shared state written by the background import thread, read by the poll callback.
+# CPython's GIL makes list.append / bool assignment atomic enough for this pattern.
+_import_log: list[str] = []
+_import_done: bool = False
+_import_no_new_tx: bool = False
+_import_result: dict = {}  # "component.prop" -> value, populated when done
+
+_NO_NEW_TX_MARKERS = (
+    "No new CSVs found — nothing to do.",
+    "No files were processed.",
+    "no new transactions found in",
+)
+
+
+def _stream_import(
+    source: str, period_args: list[str], depth: int, period_label: str
+) -> None:
+    """
+    Run the import pipeline in a background thread.  Progress is written to the
+    module-level _import_log list; the poll_import callback reads it every 400 ms.
+    source is "debit" or "savings".
+    """
+    global _import_done, _import_no_new_tx, _import_result
+
+    rules = str(Path(CFG[f"hledger_rules_{source}"]).expanduser())
+    skip_txcat = bool(CFG.get(f"skip_txcat_{source}", False))
+
+    steps = []
+    if not skip_txcat:
+        txcat_dir = str(Path(CFG["txcat_dir"]).expanduser())
+        steps.append((["txcat", "auto", "--source", source], txcat_dir))
+    steps.append(([HLEDGER_BIN, "import", rules], None))
+
+    _import_log.append(f"Starting import from {source}…")
+    aborted = False
+    child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+
+    try:
+        for cmd, cwd in steps:
+            _import_log.append("▶ " + " ".join(cmd))
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=cwd,
+                    env=child_env,
+                )
+            except (FileNotFoundError, OSError) as exc:
+                _import_log.append(f"⚠ Could not start process: {exc}")
+                aborted = True
+                break
+
+            while True:
+                raw_line = proc.stdout.readline()
+                if not raw_line:
+                    break
+                stripped = raw_line.rstrip()
+                if any(m in stripped for m in _NO_NEW_TX_MARKERS):
+                    _import_no_new_tx = True
+                _import_log.append(stripped)
+
+            proc.wait()
+            if proc.returncode != 0:
+                _import_log.append(
+                    f"⚠ Process exited {proc.returncode} — import aborted."
+                )
+                aborted = True
+                break
+    finally:
+        _import_lock.release()
+
+    if aborted or _import_no_new_tx:
+        _import_done = True
+        return
+
+    # ── Refresh all graphs after a successful import ───────────────────────────
+    _import_log.append("\n↻ Refreshing charts…")
+
+    inc_acct = CFG["income_account"]
+    exp_acct = CFG["expenses_account"]
+    sav_acct = CFG["savings_account"]
+    deb_acct = CFG["debit_account"]
+
+    inc_raw, l1 = run_hledger(["bal", inc_acct], period_args, depth)
+    exp_raw, l2 = run_hledger(["bal", exp_acct], period_args, depth)
+    sav_raw, l3 = run_hledger(["bal", sav_acct], period_args, depth)
+    deb_raw, l4 = run_hledger(["bal", deb_acct], period_args, depth=None)
+    for entry in (l1, l2, l3, l4):
+        _import_log.append(entry)
+
+    inc_df = normalise(inc_raw, flip_sign=True)
+    exp_df = normalise(exp_raw, flip_sign=False)
+    sav_df = normalise(sav_raw, flip_sign=False)
+    deb_df = normalise(deb_raw, flip_sign=False)
+
+    debit_change = float(deb_df["amount"].sum()) if not deb_df.empty else 0.0
+
+    if inc_df.empty and exp_df.empty:
+        sankey_fig = empty_sankey_figure(
+            "No income / expense data returned.\n"
+            "Check that hledger is on $PATH and your journal has transactions."
+        )
+    else:
+        sb = build_sankey(inc_df, exp_df, sav_df, debit_change, deb_acct)
+        pd_data = sb.to_plotly(node_colors=getattr(sb, "_node_colors", None))
+        sankey_fig = go.Figure(
+            data=[go.Sankey(arrangement="snap", **pd_data)],
+            layout=dark_layout(
+                f"Income → Savings & Expenses  [{period_label}, depth {depth}]"
+            ),
+        )
+
+    inc_med_acct = inc_acct + ":medical"
+    exp_med_acct = exp_acct + ":medical"
+    inc_m_raw, _ = run_hledger(["bal", inc_acct], period_args, depth, monthly=True)
+    exp_m_raw, _ = run_hledger(["bal", exp_acct], period_args, depth, monthly=True)
+    inc_med_m_raw, _ = run_hledger(
+        ["bal", inc_med_acct], period_args, depth=None, monthly=True
+    )
+    exp_med_m_raw, _ = run_hledger(
+        ["bal", exp_med_acct], period_args, depth=None, monthly=True
+    )
+
+    if inc_m_raw.empty or exp_m_raw.empty:
+        bar_fig = empty_bar_figure("No monthly data available for this period.")
+    else:
+        try:
+            s_income = pivot_monthly(inc_m_raw, flip=True)
+            s_expenses = pivot_monthly(exp_m_raw, flip=False)
+            s_inc_medical = (
+                pivot_monthly(inc_med_m_raw, flip=True)
+                if not inc_med_m_raw.empty
+                else pd.Series(0.0, index=s_income.index)
+            )
+            s_exp_medical = (
+                pivot_monthly(exp_med_m_raw, flip=False)
+                if not exp_med_m_raw.empty
+                else pd.Series(0.0, index=s_expenses.index)
+            )
+            bar_fig = build_monthly_bar_figure(
+                s_income, s_inc_medical, s_expenses, s_exp_medical, period_label
+            )
+        except Exception as exc:
+            bar_fig = empty_bar_figure(f"Error building trend chart: {exc}")
+
+    weekly_raw, _ = run_hledger_weekly(exp_acct, period_args, depth)
+    weekly_data = parse_weekly_data(weekly_raw)
+    sm_fig, sm_style = build_small_multiples_figure(weekly_data, period_label)
+    hm_fig = build_heatmap_figure(weekly_data, period_label)
+
+    reg_txns, reg_cmd = run_hledger_register_full(exp_acct, period_args)
+    register_data = {"txns": reg_txns, "cmd": reg_cmd}
+
+    _import_log.append("✓ Charts updated after import")
+    _import_result = {
+        "sankey-graph.figure": sankey_fig,
+        "bar-graph.figure": bar_fig,
+        "sm-graph.figure": sm_fig,
+        "sm-graph.style": sm_style,
+        "hm-graph.figure": hm_fig,
+        "strip-data-store.data": weekly_data,
+        "register-data-store.data": register_data,
+        "strip-parent-filter.data": [],
+    }
+    _import_done = True
 
 
 # ── Weekly expense helpers ─────────────────────────────────────────────────────
@@ -599,6 +798,76 @@ def pivot_monthly(df: pd.DataFrame, flip: bool = False) -> pd.Series:
     return -totals if flip else totals
 
 
+def build_monthly_bar_figure(
+    s_income: pd.Series,
+    s_inc_medical: pd.Series,
+    s_expenses: pd.Series,
+    s_exp_medical: pd.Series,
+    period_label: str,
+) -> go.Figure:
+    """
+    Grouped bar chart with stacked segments.
+    Income: medical on bottom, other on top.
+    Expenses: medical on bottom, other on top.
+    Uses offsetgroup + base so the two groups sit side by side.
+    """
+    months = s_income.index.tolist()
+    s_inc_medical = s_inc_medical.reindex(s_income.index, fill_value=0.0)
+    s_inc_other = s_income - s_inc_medical
+    s_exp_medical = s_exp_medical.reindex(s_expenses.index, fill_value=0.0)
+    s_exp_other = s_expenses - s_exp_medical
+    return go.Figure(
+        data=[
+            go.Bar(
+                name="Income (medical)",
+                x=months,
+                y=s_inc_medical.values,
+                marker_color=COLOR_INCOME_MEDICAL,
+                offsetgroup="income",
+            ),
+            go.Bar(
+                name="Income (other)",
+                x=months,
+                y=s_inc_other.values,
+                marker_color=COLOR_INCOME,
+                offsetgroup="income",
+            ),
+            go.Bar(
+                name="Expenses (medical)",
+                x=months,
+                y=s_exp_medical.values,
+                marker_color=COLOR_EXPENSE_MEDICAL,
+                offsetgroup="expenses",
+            ),
+            go.Bar(
+                name="Expenses (other)",
+                x=months,
+                y=s_exp_other.values,
+                marker_color=COLOR_EXPENSE,
+                offsetgroup="expenses",
+            ),
+        ],
+        layout=dark_layout(
+            f"Monthly Income vs Expenses  [{period_label}]",
+            barmode="stack",
+            xaxis=dict(
+                title="Month", color=FONT_COLOR, gridcolor=BORDER, linecolor=BORDER
+            ),
+            yaxis=dict(
+                title="Amount", color=FONT_COLOR, gridcolor=BORDER, linecolor=BORDER
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(color=FONT_COLOR),
+            ),
+        ),
+    )
+
+
 def _weekly_empty(title: str, msg: str) -> go.Figure:
     fig = go.Figure(layout=dark_layout(title, height=480))
     fig.add_annotation(
@@ -628,7 +897,9 @@ def empty_strip_figure(msg: str = "Click Refresh to load data") -> go.Figure:
 # ── Weekly figure builders ─────────────────────────────────────────────────────
 
 
-def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Figure:
+def build_small_multiples_figure(
+    weekly_data: dict, period_label: str, plot_w: int = 1200
+) -> go.Figure:
     """
     One bar-chart panel per expense sub-category.
     Bars = weekly spend; dashed line = period average.
@@ -645,31 +916,46 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
     cat_max = {cat: max(weekly_data[cat]["amounts"], default=0) for cat in cats}
     cats = sorted(cats, key=lambda c: cat_max[c], reverse=True)
 
-    # ── Grid layout: minimise empty cells (n_cols*n_rows - n), prefer more
-    # columns on ties so the figure stays landscape rather than tall. ──
-    _plot_w = 1200  # assumed usable width (px); 72 = l+r figure margins
-    _min_sw = 130  # minimum readable subplot width (px)
-    _max_cols = max(1, int(_plot_w / _min_sw))  # hard ceiling (~8 at 1200 px)
-    _ideal_nc = math.ceil(math.sqrt(n))
-    _lo = max(1, _ideal_nc - 2)
-    _hi = min(n, min(_ideal_nc * 2, _max_cols))
+    # ── Font geometry (Plotly has no Python API for text pixel sizes; these are
+    # estimates for Inter/Arial using 0.55× font-size per character) ───────────
+    _ASPECT_RATIO = 1.0  # W:H per subplot (1 = square)
+    _tick_fs = WEEKLY_SMALL_TICK_FONT["size"]  # 12 px
+    _title_fs = WEEKLY_AX_TITLE_FONT["size"]  # 15 px
+    _ang = math.radians(35)
+    _lbl_w = 7 * 0.55 * _tick_fs  # "YY-Www" width ≈ 46 px
+    _lbl_h = _tick_fs * 1.2  # cap height ≈ 14 px
+    _tick_h_span = _lbl_w * math.cos(_ang) + _lbl_h * math.sin(_ang)  # ≈ 46 px
+    _tick_v_drop = _lbl_w * math.sin(_ang) + _lbl_h * math.cos(_ang)  # ≈ 38 px
 
-    best_empty, best_n_cols = n + 1, _ideal_nc
-    for _nc in range(_lo, _hi + 1):
-        _nr = math.ceil(n / _nc)
-        _empty = _nc * _nr - n
-        if _empty < best_empty or (_empty == best_empty and _nc > best_n_cols):
-            best_empty = _empty
-            best_n_cols = _nc
+    # ── Inter-column gap ──────────────────────────────────────────────────────
+    # Each side of a column boundary contributes ≈½ label-width; margin so labels
+    # from adjacent columns don't overlap.
+    _h_gap_px = int(_tick_h_span * 1)  # ≈
 
-    n_cols = best_n_cols
+    # ── Minimum subplot width: fit ≥ 4 tick labels side-by-side ──────────────
+    _min_sw = int(4 * _tick_h_span) + 20  # ≈ 204 px
+
+    # ── Column count: ceil(√n) targets a square grid ──────────────────────────
+    # Scoring functions (e.g. 2×empty − n_cols) fail for numbers that happen to
+    # divide evenly by 2 (like 22): 22÷2=11 rows with 0 waste beats any 3-col
+    # option that has 2 empty cells, giving a pathological 2×11 grid.
+    _max_cols = max(1, min(n, int((plot_w + _h_gap_px) / (_min_sw + _h_gap_px))))
+    n_cols = min(_max_cols, max(1, math.ceil(math.sqrt(n))))
     n_rows = math.ceil(n / n_cols)
 
-    # ── Figure height: scale so each subplot hits aspect ratio ~1.2:1 (w:h),
-    # which is comfortably within the [1:1, 3:2] allowed band. ──
-    _subplot_w = _plot_w / n_cols
-    _subplot_h = _subplot_w / 1.2
-    fig_height = int(n_rows * _subplot_h)  # 128 px ≈ top + bottom margins
+    # ── Subplot dimensions ────────────────────────────────────────────────────
+    subplot_w = (plot_w - (n_cols - 1) * _h_gap_px) / max(n_cols, 1)
+    subplot_h = subplot_w / _ASPECT_RATIO
+    # horizontal_spacing is normalised to total plot-area width (Plotly convention)
+    _h_spacing = (_h_gap_px / plot_w) if n_cols > 1 else 0.0
+
+    # ── Vertical spacing: gap must clear tick-label drop + subplot title ───────
+    _gap_px = _tick_v_drop + _title_fs * 1.5 + 6  # ≈ 67 px
+    _vs = max(0.02, _gap_px / max(n_rows * subplot_h, 1))
+
+    # ── Figure height ─────────────────────────────────────────────────────────
+    _plot_area_h = n_rows * subplot_h / max(1.0 - (n_rows - 1) * _vs, 0.1)
+    fig_height = int(_plot_area_h) + 140
     short_names = [c.split(":")[-1] for c in cats]
 
     fig = make_subplots(
@@ -678,8 +964,8 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         subplot_titles=short_names,
         shared_xaxes=False,
         shared_yaxes=True,
-        vertical_spacing=max(0.06, 0.333 / n_rows),
-        horizontal_spacing=0.02,
+        vertical_spacing=_vs,
+        horizontal_spacing=_h_spacing,
     )
 
     for i, (cat, short) in enumerate(zip(cats, short_names)):
@@ -736,7 +1022,6 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
         gridcolor=BORDER,
         linecolor=BORDER,
         showgrid=True,
-        automargin=True,
     )
     fig.update_yaxes(
         tickfont=WEEKLY_SMALL_TICK_FONT,
@@ -765,7 +1050,8 @@ def build_small_multiples_figure(weekly_data: dict, period_label: str) -> go.Fig
             bgcolor="rgba(0,0,0,0)",
         ),
     )
-    return fig
+    sm_style = {"width": "100%", "aspectRatio": f"{plot_w} / {fig_height}"}
+    return fig, sm_style
 
 
 def build_heatmap_figure(weekly_data: dict, period_label: str) -> go.Figure:
@@ -849,6 +1135,7 @@ def build_strip_figure(
     period_label: str,
     orientation: str = "v",
     scale_mode: str = "linear",
+    hidden_parents: list | None = None,
 ) -> go.Figure:
     """
     Violin plot — one trace per expense sub-category (sorted by average descending).
@@ -882,7 +1169,6 @@ def build_strip_figure(
     cats = sorted(
         weekly_data.keys(), key=lambda c: weekly_data[c]["average"], reverse=True
     )
-    short_names = [c.split(":")[-1] for c in cats]
 
     # ── Parent-category colour mapping ─────────────────────────────────────────
     # The expenses account prefix has N parts; the next segment is the "parent".
@@ -893,11 +1179,25 @@ def build_strip_figure(
         parts = cat.split(":")
         return parts[_exp_depth] if len(parts) > _exp_depth else parts[-1]
 
+    # Build parent list from ALL categories before filtering so hidden parents
+    # still appear in the legend and can be clicked again to restore them.
     _parents_ordered: list[str] = list(dict.fromkeys(_get_parent(c) for c in cats))
     _parent_color: dict[str, str] = {
         p: PARENT_CATEGORY_COLORS[i % len(PARENT_CATEGORY_COLORS)]
         for i, p in enumerate(_parents_ordered)
     }
+
+    # ── Filter to visible categories ───────────────────────────────────────────
+    # Exclude categories whose parent is in hidden_parents. Hidden parents remain
+    # in the legend so the user can click to restore them. Axis labels and plot
+    # space for hidden categories are eliminated entirely (not just `legendonly`)
+    # so the remaining categories reflow to fill the available space.
+    hidden_set = set(hidden_parents or [])
+    if hidden_set:
+        _visible = [c for c in cats if _get_parent(c) not in hidden_set]
+        cats = _visible if _visible else cats  # never leave the plot empty
+
+    short_names = [c.split(":")[-1] for c in cats]
 
     # ── Transform helpers ──────────────────────────────────────────────────────
     POWER = 0.3
@@ -1077,14 +1377,17 @@ def build_strip_figure(
         )
 
     # ── Legend: one invisible scatter per parent category ─────────────────────
+    # Hidden parents are dimmed so users can see they exist and click to restore.
     for parent in _parents_ordered:
         c = _parent_color[parent]
+        is_hidden = parent in hidden_set
+        alpha = "0.30" if is_hidden else "0.85"
         fig.add_trace(
             go.Scatter(
                 x=[None],
                 y=[None],
                 mode="markers",
-                marker=dict(color=c.replace("0.95", "0.85"), size=12, symbol="square"),
+                marker=dict(color=c.replace("0.95", alpha), size=12, symbol="square"),
                 name=parent,
                 showlegend=True,
             )
@@ -1275,7 +1578,7 @@ app.layout = html.Div(
     style=STYLE_PAGE,
     children=[
         # CSS is in assets/dashboard.css
-        html.H1("hledger Finance Dashboard", style=STYLE_TITLE),
+        html.H1("hledger Dashboard", style=STYLE_TITLE),
         # ── Controls card + status log ─────────────────────────────────────────────
         html.Div(
             style={
@@ -1348,7 +1651,7 @@ app.layout = html.Div(
                                             },
                                             {"label": "Level 4 — detail", "value": 4},
                                         ],
-                                        value=2,
+                                        value=CFG.get("default_depth", 2),
                                         clearable=False,
                                         style={"width": "220px"},
                                     ),
@@ -1427,6 +1730,26 @@ app.layout = html.Div(
                                         style=STYLE_BTN_PRIMARY,
                                     ),
                                 ]),
+                                html.Div([
+                                    _label("\u00a0"),
+                                    html.Button(
+                                        "⟳ Import",
+                                        id="import-btn",
+                                        n_clicks=0,
+                                        title="Run txcat → hledger import, then refresh",
+                                        style=STYLE_BTN_NEUTRAL,
+                                    ),
+                                ]),
+                                html.Div([
+                                    _label("\u00a0"),
+                                    html.Button(
+                                        "⚙",
+                                        id="settings-btn",
+                                        n_clicks=0,
+                                        title="Settings",
+                                        style=STYLE_BTN_NEUTRAL,
+                                    ),
+                                ]),
                             ],
                         ),
                     ],
@@ -1446,7 +1769,7 @@ app.layout = html.Div(
             style={"marginBottom": "0"},
             children=[
                 dcc.Tab(
-                    label="Sankey — Income → Savings & Expenses",
+                    label="Sankey",
                     value="tab-sankey",
                     style=_tab_style(),
                     selected_style=_tab_selected_style(),
@@ -1472,7 +1795,7 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
-                    label="Monthly Trend — Income vs Expenses",
+                    label="Monthly Trend",
                     value="tab-trend",
                     style=_tab_style(),
                     selected_style=_tab_selected_style(),
@@ -1491,7 +1814,7 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
-                    label="Weekly — Small multiples",
+                    label="Small multiples",
                     value="tab-sm",
                     style=_tab_style(),
                     selected_style=_tab_selected_style(),
@@ -1504,17 +1827,14 @@ app.layout = html.Div(
                                     id="sm-graph",
                                     figure=empty_sm_figure(),
                                     config={"displayModeBar": True, "responsive": True},
-                                    style={
-                                        "height": "100vh",
-                                        "width": "100%",
-                                    },
+                                    style={"width": "100%"},
                                 ),
                             ],
                         ),
                     ],
                 ),
                 dcc.Tab(
-                    label="Weekly — Heatmap",
+                    label="Heatmap",
                     value="tab-hm",
                     style=_tab_style(),
                     selected_style=_tab_selected_style(),
@@ -1537,7 +1857,7 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
-                    label="Weekly — Distribution",
+                    label="Distribution",
                     value="tab-strip",
                     style=_tab_style(),
                     selected_style=_tab_selected_style(),
@@ -1580,6 +1900,76 @@ app.layout = html.Div(
                         ),
                     ],
                 ),
+                dcc.Tab(
+                    label="hledger Shell",
+                    value="tab-shell",
+                    style=_tab_style(),
+                    selected_style=_tab_selected_style(),
+                    children=[
+                        html.Div(
+                            style={"padding": "16px"},
+                            children=[
+                                html.Div(
+                                    style={
+                                        "display": "flex",
+                                        "gap": "8px",
+                                        "marginBottom": "10px",
+                                        "alignItems": "center",
+                                    },
+                                    children=[
+                                        html.Span(
+                                            "hledger",
+                                            style={
+                                                "fontFamily": "monospace",
+                                                "fontSize": "13px",
+                                                "color": "#888",
+                                                "flexShrink": "0",
+                                            },
+                                        ),
+                                        dcc.Input(
+                                            id="shell-input",
+                                            type="text",
+                                            debounce=False,
+                                            placeholder="bal expenses --depth 2",
+                                            value="",
+                                            n_submit=0,
+                                            style={
+                                                "flex": "1",
+                                                "fontFamily": "monospace",
+                                                "fontSize": "13px",
+                                                "backgroundColor": "#0d0c0c",
+                                                "color": FONT_COLOR,
+                                                "border": f"1px solid {BORDER}",
+                                                "borderRadius": "4px",
+                                                "padding": "7px 10px",
+                                                "outline": "none",
+                                            },
+                                        ),
+                                        html.Button(
+                                            "▶ Run",
+                                            id="shell-run-btn",
+                                            n_clicks=0,
+                                            style=STYLE_BTN_PRIMARY,
+                                        ),
+                                    ],
+                                ),
+                                html.Pre(
+                                    id="shell-output",
+                                    style={
+                                        **STYLE_STATUS,
+                                        "flex": "unset",
+                                        "minHeight": "300px",
+                                        "maxHeight": "70vh",
+                                        "overflowY": "auto",
+                                        "fontSize": "13px",
+                                        "whiteSpace": "pre",
+                                    },
+                                    children="Enter a hledger command above and press Run (or hit Enter).",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
             ],
         ),
         # ── Hidden state stores ────────────────────────────────────────────────────
@@ -1588,6 +1978,11 @@ app.layout = html.Div(
         dcc.Store(id="violin-scale", data="linear"),
         dcc.Store(id="strip-data-store"),
         dcc.Store(id="register-data-store"),
+        dcc.Store(id="strip-legend-meta", data=None),
+        dcc.Store(id="strip-parent-filter", data=[]),
+        dcc.Store(id="sm-width-store", data=1200),
+        dcc.Store(id="sm-period-label-store", data=""),
+        dcc.Interval(id="import-poll", interval=400, n_intervals=0, disabled=True),
         html.Div(id="_resize-dummy", style={"display": "none"}),
         html.Div(id="_violin-setup-dummy", style={"display": "none"}),
         html.Div(id="violin-hover-tooltip", style=STYLE_VIOLIN_TOOLTIP),
@@ -1672,6 +2067,422 @@ app.layout = html.Div(
                 ),
             ],
         ),
+        # ── Account source selection modal ────────────────────────────────────────
+        html.Div(
+            id="import-source-modal",
+            style={"display": "none"},
+            children=[
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "0",
+                        "left": "0",
+                        "width": "100vw",
+                        "height": "100vh",
+                        "backgroundColor": "rgba(0,0,0,0.72)",
+                        "zIndex": "900",
+                    },
+                ),
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "50%",
+                        "left": "50%",
+                        "transform": "translate(-50%, -50%)",
+                        "zIndex": "1000",
+                        "width": "min(420px, 92vw)",
+                        "backgroundColor": CARD_BG,
+                        "border": f"1px solid {BORDER}",
+                        "borderRadius": "8px",
+                        "padding": "24px 28px",
+                        "boxShadow": "0 16px 48px rgba(0,0,0,0.6)",
+                        "textAlign": "center",
+                    },
+                    children=[
+                        html.H3(
+                            "Import from which account?",
+                            style={
+                                "color": FONT_COLOR,
+                                "margin": "0 0 20px",
+                                "fontSize": "16px",
+                                "fontWeight": "500",
+                            },
+                        ),
+                        html.Div(
+                            style={
+                                "display": "flex",
+                                "gap": "12px",
+                                "justifyContent": "center",
+                                "marginBottom": "14px",
+                            },
+                            children=[
+                                html.Button(
+                                    CFG["debit_account"],
+                                    id="import-debit-btn",
+                                    n_clicks=0,
+                                    style=STYLE_BTN_NEUTRAL,
+                                ),
+                                html.Button(
+                                    CFG["savings_account"],
+                                    id="import-savings-btn",
+                                    n_clicks=0,
+                                    style=STYLE_BTN_NEUTRAL,
+                                ),
+                            ],
+                        ),
+                        html.Button(
+                            "Cancel",
+                            id="import-source-cancel",
+                            n_clicks=0,
+                            style={**STYLE_BTN_SMALL_WARN, "marginTop": "4px"},
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        # ── Bank navigation modal (no new transactions) ───────────────────────────
+        html.Div(
+            id="bank-nav-modal",
+            style={"display": "none"},
+            children=[
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "0",
+                        "left": "0",
+                        "width": "100vw",
+                        "height": "100vh",
+                        "backgroundColor": "rgba(0,0,0,0.72)",
+                        "zIndex": "900",
+                    },
+                ),
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "50%",
+                        "left": "50%",
+                        "transform": "translate(-50%, -50%)",
+                        "zIndex": "1000",
+                        "width": "min(420px, 92vw)",
+                        "backgroundColor": CARD_BG,
+                        "border": f"1px solid {BORDER}",
+                        "borderRadius": "8px",
+                        "padding": "24px 28px",
+                        "boxShadow": "0 16px 48px rgba(0,0,0,0.6)",
+                        "textAlign": "center",
+                    },
+                    children=[
+                        html.P(
+                            "No new transactions found.",
+                            style={
+                                "color": FONT_COLOR,
+                                "fontSize": "15px",
+                                "fontWeight": "500",
+                                "margin": "0 0 8px",
+                            },
+                        ),
+                        html.P(
+                            "Visit your bank to download new statements?",
+                            style={
+                                "color": "#999",
+                                "fontSize": "13px",
+                                "margin": "0 0 20px",
+                            },
+                        ),
+                        html.Div(
+                            style={
+                                "display": "flex",
+                                "gap": "12px",
+                                "justifyContent": "center",
+                            },
+                            children=[
+                                html.A(
+                                    "Open bank website →",
+                                    id="bank-nav-link",
+                                    href=CFG.get("bank_url", ""),
+                                    target="_blank",
+                                    style={
+                                        **STYLE_BTN_PRIMARY,
+                                        "textDecoration": "none",
+                                        "display": "inline-block",
+                                    },
+                                ),
+                                html.Button(
+                                    "✕ Dismiss",
+                                    id="bank-nav-close",
+                                    n_clicks=0,
+                                    style=STYLE_BTN_SMALL_WARN,
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        # ── Settings modal ────────────────────────────────────────────────────────
+        html.Div(
+            id="settings-modal",
+            style={"display": "none"},
+            children=[
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "0",
+                        "left": "0",
+                        "width": "100vw",
+                        "height": "100vh",
+                        "backgroundColor": "rgba(0,0,0,0.72)",
+                        "zIndex": "900",
+                    },
+                ),
+                html.Div(
+                    style={
+                        "position": "fixed",
+                        "top": "50%",
+                        "left": "50%",
+                        "transform": "translate(-50%, -50%)",
+                        "zIndex": "1000",
+                        "width": "min(600px, 92vw)",
+                        "maxHeight": "85vh",
+                        "overflowY": "auto",
+                        "backgroundColor": CARD_BG,
+                        "border": f"1px solid {BORDER}",
+                        "borderRadius": "8px",
+                        "padding": "24px 28px",
+                        "boxShadow": "0 16px 48px rgba(0,0,0,0.6)",
+                    },
+                    children=[
+                        html.Div(
+                            style={
+                                "display": "flex",
+                                "justifyContent": "space-between",
+                                "alignItems": "center",
+                                "marginBottom": "20px",
+                            },
+                            children=[
+                                html.H3(
+                                    "Settings",
+                                    style={
+                                        "color": FONT_COLOR,
+                                        "margin": "0",
+                                        "fontSize": "16px",
+                                        "fontWeight": "500",
+                                    },
+                                ),
+                                html.Button(
+                                    "✕ Close",
+                                    id="settings-close",
+                                    n_clicks=0,
+                                    style=STYLE_BTN_SMALL_WARN,
+                                ),
+                            ],
+                        ),
+                        # Account mapping
+                        html.P(
+                            "Account Mapping",
+                            style={
+                                "color": "#888",
+                                "fontSize": "11px",
+                                "textTransform": "uppercase",
+                                "letterSpacing": "0.08em",
+                                "margin": "0 0 10px",
+                            },
+                        ),
+                        *[
+                            html.Div(
+                                style={"marginBottom": "10px"},
+                                children=[
+                                    html.Label(
+                                        label,
+                                        style={
+                                            **STYLE_LABEL,
+                                            "marginBottom": "4px",
+                                            "display": "block",
+                                        },
+                                    ),
+                                    dcc.Input(
+                                        id=f"settings-{field}",
+                                        type="text",
+                                        debounce=False,
+                                        style={
+                                            "width": "100%",
+                                            "backgroundColor": BG,
+                                            "color": FONT_COLOR,
+                                            "border": f"1px solid {BORDER}",
+                                            "borderRadius": "4px",
+                                            "padding": "6px 10px",
+                                            "fontSize": "13px",
+                                            "boxSizing": "border-box",
+                                        },
+                                    ),
+                                ],
+                            )
+                            for field, label in [
+                                ("income-account", "Income account"),
+                                ("expenses-account", "Expenses account"),
+                                ("savings-account", "Savings account"),
+                                ("debit-account", "Debit account"),
+                            ]
+                        ],
+                        # Import settings
+                        html.P(
+                            "Import",
+                            style={
+                                "color": "#888",
+                                "fontSize": "11px",
+                                "textTransform": "uppercase",
+                                "letterSpacing": "0.08em",
+                                "margin": "16px 0 10px",
+                            },
+                        ),
+                        *[
+                            html.Div(
+                                style={"marginBottom": "10px"},
+                                children=[
+                                    html.Label(
+                                        label,
+                                        style={
+                                            **STYLE_LABEL,
+                                            "marginBottom": "4px",
+                                            "display": "block",
+                                        },
+                                    ),
+                                    dcc.Input(
+                                        id=f"settings-{field}",
+                                        type="text",
+                                        debounce=False,
+                                        style={
+                                            "width": "100%",
+                                            "backgroundColor": BG,
+                                            "color": FONT_COLOR,
+                                            "border": f"1px solid {BORDER}",
+                                            "borderRadius": "4px",
+                                            "padding": "6px 10px",
+                                            "fontSize": "13px",
+                                            "boxSizing": "border-box",
+                                        },
+                                    ),
+                                ],
+                            )
+                            for field, label in [
+                                ("bank-url", "Bank website URL"),
+                                ("hledger-rules-debit", "hledger rules — debit"),
+                                ("hledger-rules-savings", "hledger rules — savings"),
+                                ("txcat-dir", "txcat directory"),
+                            ]
+                        ],
+                        *[
+                            html.Div(
+                                style={"marginBottom": "10px"},
+                                children=[
+                                    html.Label(
+                                        label,
+                                        style={
+                                            **STYLE_LABEL,
+                                            "marginBottom": "6px",
+                                            "display": "block",
+                                        },
+                                    ),
+                                    html.Div(
+                                        style={
+                                            "display": "flex",
+                                            "border": "1px solid #444",
+                                            "borderRadius": "4px",
+                                            "overflow": "hidden",
+                                            "width": "fit-content",
+                                        },
+                                        children=[
+                                            html.Button(
+                                                "Run txcat",
+                                                id=f"settings-skip-txcat-{acct}-no",
+                                                n_clicks=0,
+                                                style={},
+                                            ),
+                                            html.Button(
+                                                "Skip txcat",
+                                                id=f"settings-skip-txcat-{acct}-yes",
+                                                n_clicks=0,
+                                                style={},
+                                            ),
+                                        ],
+                                    ),
+                                    dcc.Store(
+                                        id=f"settings-skip-txcat-{acct}", data=False
+                                    ),
+                                ],
+                            )
+                            for acct, label in [
+                                ("debit", "Skip txcat — debit"),
+                                ("savings", "Skip txcat — savings"),
+                            ]
+                        ],
+                        # Display settings
+                        html.P(
+                            "Display",
+                            style={
+                                "color": "#888",
+                                "fontSize": "11px",
+                                "textTransform": "uppercase",
+                                "letterSpacing": "0.08em",
+                                "margin": "16px 0 10px",
+                            },
+                        ),
+                        html.Div(
+                            style={"marginBottom": "20px"},
+                            children=[
+                                html.Label(
+                                    "Default account depth",
+                                    style={
+                                        **STYLE_LABEL,
+                                        "marginBottom": "6px",
+                                        "display": "block",
+                                    },
+                                ),
+                                html.Div(
+                                    style={
+                                        "display": "flex",
+                                        "border": "1px solid #444",
+                                        "borderRadius": "4px",
+                                        "overflow": "hidden",
+                                        "width": "fit-content",
+                                    },
+                                    children=[
+                                        html.Button(
+                                            "2 — categories",
+                                            id="settings-depth-btn-2",
+                                            n_clicks=0,
+                                            style={},
+                                        ),
+                                        html.Button(
+                                            "3 — sub-accounts",
+                                            id="settings-depth-btn-3",
+                                            n_clicks=0,
+                                            style={},
+                                        ),
+                                        html.Button(
+                                            "4 — detail",
+                                            id="settings-depth-btn-4",
+                                            n_clicks=0,
+                                            style={},
+                                        ),
+                                    ],
+                                ),
+                                dcc.Store(
+                                    id="settings-default-depth",
+                                    data=CFG.get("default_depth", 2),
+                                ),
+                            ],
+                        ),
+                        html.Button(
+                            "Save",
+                            id="settings-save",
+                            n_clicks=0,
+                            style=STYLE_BTN_PRIMARY,
+                        ),
+                    ],
+                ),
+            ],
+        ),
     ],
 )
 
@@ -1687,6 +2498,24 @@ app.clientside_callback(
     """,
     Output("_resize-dummy", "children"),
     Input("tabs", "value"),
+)
+
+app.clientside_callback(
+    """
+    function(id) {
+        function measure() {
+            var el = document.getElementById('sm-graph');
+            return el ? Math.round(el.getBoundingClientRect().width) : window.innerWidth;
+        }
+        window.addEventListener('resize', function() {
+            var w = measure();
+            if (w > 0) { dash_clientside.set_props('sm-width-store', {data: w}); }
+        });
+        return measure() || window.innerWidth;
+    }
+    """,
+    Output("sm-width-store", "data"),
+    Input("sm-graph", "id"),
 )
 
 app.clientside_callback(
@@ -1844,19 +2673,23 @@ def cycle_scale(n, current):
     Output("sankey-graph", "figure"),
     Output("bar-graph", "figure"),
     Output("sm-graph", "figure"),
+    Output("sm-graph", "style"),
     Output("hm-graph", "figure"),
     Output("strip-data-store", "data"),
     Output("register-data-store", "data"),
+    Output("sm-period-label-store", "data"),
     Output("status-log", "children"),
     Output("status-log", "style"),
+    Output("strip-parent-filter", "data"),
     Input("refresh-btn", "n_clicks"),
     State("period-dd", "value"),
     State("depth-dd", "value"),
     State("begin-dp", "date"),
     State("end-dp", "date"),
+    State("sm-width-store", "data"),
     prevent_initial_call=True,
 )
-def refresh(n_clicks, period, depth, begin, end):
+def refresh(_refresh_n, period, depth, begin, end, sm_width):
 
     # ── Guardrail: --end without --begin ───────────────────────────────────────
     if end and not begin:
@@ -1870,11 +2703,14 @@ def refresh(n_clicks, period, depth, begin, end):
             no_update,
             no_update,
             no_update,
+            no_update,  # sm-graph.style
             no_update,
             no_update,
             no_update,
+            no_update,  # sm-period-label-store
             msg,
             STYLE_ERROR,
+            no_update,
         )
 
     # ── Build period args ──────────────────────────────────────────────────────
@@ -1950,9 +2786,17 @@ def refresh(n_clicks, period, depth, begin, end):
         )
 
     # ── Monthly trend ──────────────────────────────────────────────────────────
+    inc_med_acct = inc_acct + ":medical"
+    exp_med_acct = exp_acct + ":medical"
     inc_m_raw, lm1 = run_hledger(["bal", inc_acct], period_args, depth, monthly=True)
     exp_m_raw, lm2 = run_hledger(["bal", exp_acct], period_args, depth, monthly=True)
-    log_lines += [lm1, lm2]
+    inc_med_m_raw, lm3 = run_hledger(
+        ["bal", inc_med_acct], period_args, depth=None, monthly=True
+    )
+    exp_med_m_raw, lm4 = run_hledger(
+        ["bal", exp_med_acct], period_args, depth=None, monthly=True
+    )
+    log_lines += [lm1, lm2, lm3, lm4]
 
     if inc_m_raw.empty or exp_m_raw.empty:
         bar_fig = empty_bar_figure("No monthly data available for this period.")
@@ -1960,46 +2804,18 @@ def refresh(n_clicks, period, depth, begin, end):
         try:
             s_income = pivot_monthly(inc_m_raw, flip=True)
             s_expenses = pivot_monthly(exp_m_raw, flip=False)
-            months = s_income.index.tolist()
-            bar_fig = go.Figure(
-                data=[
-                    go.Bar(
-                        name="Income",
-                        x=months,
-                        y=s_income.values,
-                        marker_color=COLOR_INCOME,
-                    ),
-                    go.Bar(
-                        name="Expenses",
-                        x=months,
-                        y=s_expenses.values,
-                        marker_color=COLOR_EXPENSE,
-                    ),
-                ],
-                layout=dark_layout(
-                    f"Monthly Income vs Expenses  [{period_label}]",
-                    barmode="group",
-                    xaxis=dict(
-                        title="Month",
-                        color=FONT_COLOR,
-                        gridcolor=BORDER,
-                        linecolor=BORDER,
-                    ),
-                    yaxis=dict(
-                        title="Amount",
-                        color=FONT_COLOR,
-                        gridcolor=BORDER,
-                        linecolor=BORDER,
-                    ),
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1,
-                        font=dict(color=FONT_COLOR),
-                    ),
-                ),
+            s_inc_medical = (
+                pivot_monthly(inc_med_m_raw, flip=True)
+                if not inc_med_m_raw.empty
+                else pd.Series(0.0, index=s_income.index)
+            )
+            s_exp_medical = (
+                pivot_monthly(exp_med_m_raw, flip=False)
+                if not exp_med_m_raw.empty
+                else pd.Series(0.0, index=s_expenses.index)
+            )
+            bar_fig = build_monthly_bar_figure(
+                s_income, s_inc_medical, s_expenses, s_exp_medical, period_label
             )
             log_lines.append("✓ Monthly trend chart updated")
         except Exception as exc:
@@ -2017,7 +2833,9 @@ def refresh(n_clicks, period, depth, begin, end):
     else:
         log_lines.append("  Weekly data: none returned")
 
-    sm_fig = build_small_multiples_figure(weekly_data, period_label)
+    sm_fig, sm_style = build_small_multiples_figure(
+        weekly_data, period_label, plot_w=int(sm_width or 1200)
+    )
     hm_fig = build_heatmap_figure(weekly_data, period_label)
 
     log_lines.append("✓ Weekly charts updated")
@@ -2031,29 +2849,169 @@ def refresh(n_clicks, period, depth, begin, end):
         sankey_fig,
         bar_fig,
         sm_fig,
+        sm_style,
         hm_fig,
         weekly_data,
         register_data,
+        period_label,
         "\n".join(log_lines),
         STYLE_STATUS,
+        [],  # reset strip-parent-filter
     )
 
 
 @app.callback(
+    Output("sm-graph", "figure", allow_duplicate=True),
+    Output("sm-graph", "style", allow_duplicate=True),
+    Input("sm-width-store", "data"),
+    State("strip-data-store", "data"),
+    State("sm-period-label-store", "data"),
+    prevent_initial_call=True,
+)
+def update_sm_on_resize(sm_width, weekly_data, period_label):
+    if not weekly_data:
+        return no_update, no_update
+    fig, sm_style = build_small_multiples_figure(
+        weekly_data, period_label or "", plot_w=int(sm_width or 1200)
+    )
+    return fig, sm_style
+
+
+@app.callback(
     Output("strip-graph", "figure"),
+    Output("strip-legend-meta", "data"),
     Input("strip-data-store", "data"),
     Input("strip-orientation", "data"),
     Input("violin-scale", "data"),
+    Input("strip-parent-filter", "data"),
     State("period-dd", "value"),
     prevent_initial_call=False,
 )
-def update_strip_plot(data, orientation, scale_mode, period):
+def update_strip_plot(data, orientation, scale_mode, hidden_parents, period):
     if not data:
-        return empty_strip_figure("No data — press ↻ Refresh")
+        return empty_strip_figure("No data — press ↻ Refresh"), None
     period_label = PERIOD_LABELS.get(period, period) if period else ""
-    return build_strip_figure(
-        data, period_label, orientation, scale_mode or "transform"
+    fig = build_strip_figure(
+        data,
+        period_label,
+        orientation,
+        scale_mode or "transform",
+        hidden_parents=hidden_parents or [],
     )
+    # Build legend meta so the filter callback can map trace indices → parent names.
+    # n_cats must reflect the VISIBLE category count (same filtering as build_strip_figure)
+    # because parent legend traces are appended at 2*n_visible_cats + j.
+    _exp_depth = len(CFG["expenses_account"].split(":"))
+
+    def _get_parent(cat: str) -> str:
+        parts = cat.split(":")
+        return parts[_exp_depth] if len(parts) > _exp_depth else parts[-1]
+
+    all_cats = sorted(data.keys(), key=lambda c: data[c]["average"], reverse=True)
+    parents = list(dict.fromkeys(_get_parent(c) for c in all_cats))  # all, for legend
+    hidden_set = set(hidden_parents or [])
+    visible_cats = [c for c in all_cats if _get_parent(c) not in hidden_set] or all_cats
+    meta = {"n_cats": len(visible_cats), "parents": parents}
+    return fig, meta
+
+
+@app.callback(
+    Output("strip-parent-filter", "data", allow_duplicate=True),
+    Input("strip-graph", "restyleData"),
+    State("strip-legend-meta", "data"),
+    State("strip-parent-filter", "data"),
+    prevent_initial_call=True,
+)
+def update_strip_filter(restyle_data, meta, current_filter):
+    """
+    Handle legend single-click (toggle) and double-click (isolate/restore).
+
+    Single click  → restyleData has one index.
+    Double click  → Plotly sends a batch restyle over ALL traces: the clicked
+                    parent legend trace becomes True, all others "legendonly".
+                    A second double-click on the now-isolated parent restores all
+                    traces to True.
+    """
+    if not restyle_data or not meta:
+        return no_update
+    try:
+        changes, indices = restyle_data
+        n_cats = meta["n_cats"]
+        parents = meta["parents"]
+        visible_vals = changes.get("visible")
+        if visible_vals is None:
+            return no_update
+    except (KeyError, IndexError, TypeError, ValueError):
+        return no_update
+
+    # Collect the visibility value for every parent legend trace in this restyle.
+    # Parent scatter traces are at figure positions 2*n_cats, 2*n_cats+1, …
+    legend_vis: dict[int, object] = {}  # parent_j → True / "legendonly"
+    for i, tidx in enumerate(indices):
+        if tidx >= 2 * n_cats:
+            pj = tidx - 2 * n_cats
+            if pj < len(parents) and i < len(visible_vals):
+                legend_vis[pj] = visible_vals[i]
+
+    if not legend_vis:
+        return no_update
+
+    if len(legend_vis) == 1:
+        # ── Single click: toggle this parent ──────────────────────────────────
+        pj = next(iter(legend_vis))
+        parent_name = parents[pj]
+        current = list(current_filter or [])
+        if parent_name in current:
+            current.remove(parent_name)
+        else:
+            current.append(parent_name)
+        if set(current) >= set(parents):
+            return []
+        return current
+
+    else:
+        # ── Double click: batch restyle from Plotly's isolate/restore ─────────
+        # If every legend trace is being set to True → "restore all" action.
+        if all(v is True for v in legend_vis.values()):
+            return []
+        # Otherwise Plotly is isolating the one parent whose trace is True.
+        visible_parents = {parents[pj] for pj, v in legend_vis.items() if v is True}
+        if visible_parents:
+            hidden = [p for p in parents if p not in visible_parents]
+            return hidden if hidden else []
+        return []
+
+
+@app.callback(
+    Output("shell-output", "children"),
+    Input("shell-run-btn", "n_clicks"),
+    Input("shell-input", "n_submit"),
+    State("shell-input", "value"),
+    prevent_initial_call=True,
+)
+def run_shell(_btn, _enter, cmd_str):
+    """Run an arbitrary hledger command and display the raw text output."""
+    if not cmd_str or not cmd_str.strip():
+        return no_update
+    try:
+        parts = shlex.split(cmd_str.strip())
+    except ValueError as exc:
+        return f"⚠ Parse error: {exc}"
+    # Strip leading 'hledger' so users can type with or without it
+    if parts and parts[0] in ("hledger", HLEDGER_BIN):
+        parts = parts[1:]
+    if not parts:
+        return "⚠ No command given."
+    cmd = [HLEDGER_BIN] + parts
+    header = "▶ " + " ".join(cmd) + "\n"
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        return header + f"⚠ hledger not found at: {HLEDGER_BIN}"
+    out = r.stdout
+    if r.returncode != 0 and r.stderr:
+        out += "\n⚠ " + r.stderr.strip()
+    return header + out
 
 
 @app.callback(
@@ -2165,18 +3123,334 @@ def handle_tx_popup(
     )
 
 
+# ── Import source selection callbacks ─────────────────────────────────────────
+
+
+def _build_period_args(period, begin, end):
+    if begin and end:
+        return ["--begin", begin, "--end", end], f"{begin} – {end}"
+    if begin:
+        return ["--begin", begin], f"from {begin}"
+    if period == "from":
+        earliest = get_ledger_start_date()
+        if earliest:
+            return ["--begin", earliest], f"from {earliest} (ledger start)"
+        return [], "all time"
+    return ["--period", period], PERIOD_LABELS.get(period, period)
+
+
+@app.callback(
+    Output("import-source-modal", "style"),
+    Output("import-poll", "disabled"),
+    Output("status-log", "children", allow_duplicate=True),
+    Input("import-btn", "n_clicks"),
+    Input("import-source-cancel", "n_clicks"),
+    Input("import-debit-btn", "n_clicks"),
+    Input("import-savings-btn", "n_clicks"),
+    State("period-dd", "value"),
+    State("depth-dd", "value"),
+    State("begin-dp", "date"),
+    State("end-dp", "date"),
+    prevent_initial_call=True,
+)
+def handle_import_modal(_btn, _cancel, _debit, _savings, period, depth, begin, end):
+    global _import_done, _import_no_new_tx, _import_result
+    triggered = callback_context.triggered_id
+    if triggered == "import-btn":
+        return {"display": "block"}, no_update, no_update
+    if triggered == "import-source-cancel":
+        return {"display": "none"}, no_update, no_update
+    source = "debit" if triggered == "import-debit-btn" else "savings"
+    if not _import_lock.acquire(blocking=False):
+        return {"display": "none"}, no_update, "⚠ Import already running — please wait."
+    # Reset shared state before starting
+    _import_log.clear()
+    _import_done = False
+    _import_no_new_tx = False
+    _import_result = {}
+    period_args, period_label = _build_period_args(period, begin, end)
+    threading.Thread(
+        target=_stream_import,
+        args=(source, period_args, depth, period_label),
+        daemon=True,
+    ).start()
+    return {"display": "none"}, False, no_update  # False = enable interval
+
+
+# ── Bank navigation modal callback ────────────────────────────────────────────
+
+
+@app.callback(
+    Output("bank-nav-modal", "style"),
+    Input("bank-nav-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def close_bank_modal(_):
+    return {"display": "none"}
+
+
+# ── Import progress polling ───────────────────────────────────────────────────
+
+
+@app.callback(
+    Output("status-log", "children", allow_duplicate=True),
+    Output("import-poll", "disabled", allow_duplicate=True),
+    Output("sankey-graph", "figure", allow_duplicate=True),
+    Output("bar-graph", "figure", allow_duplicate=True),
+    Output("sm-graph", "figure", allow_duplicate=True),
+    Output("sm-graph", "style", allow_duplicate=True),
+    Output("hm-graph", "figure", allow_duplicate=True),
+    Output("strip-data-store", "data", allow_duplicate=True),
+    Output("register-data-store", "data", allow_duplicate=True),
+    Output("strip-parent-filter", "data", allow_duplicate=True),
+    Output("bank-nav-modal", "style", allow_duplicate=True),
+    Input("import-poll", "n_intervals"),
+    prevent_initial_call=True,
+)
+def poll_import(_):
+    log = "\n".join(_import_log)
+    if not _import_done:
+        return log, False, *([no_update] * 9)
+    r = _import_result
+    bank_style = (
+        {"display": "block"} if _import_no_new_tx and CFG.get("bank_url") else no_update
+    )
+    return (
+        log,
+        True,  # disable interval
+        r.get("sankey-graph.figure", no_update),
+        r.get("bar-graph.figure", no_update),
+        r.get("sm-graph.figure", no_update),
+        r.get("sm-graph.style", no_update),
+        r.get("hm-graph.figure", no_update),
+        r.get("strip-data-store.data", no_update),
+        r.get("register-data-store.data", no_update),
+        r.get("strip-parent-filter.data", no_update),
+        bank_style,
+    )
+
+
+# ── Settings modal callbacks ──────────────────────────────────────────────────
+
+_SETTINGS_DISK_KEYS = [
+    "income_account",
+    "expenses_account",
+    "savings_account",
+    "debit_account",
+    "bank_url",
+    "hledger_rules_debit",
+    "hledger_rules_savings",
+    "txcat_dir",
+    "skip_txcat_debit",
+    "skip_txcat_savings",
+    "default_depth",
+]
+
+_DEPTH_BTN_BASE = {
+    "border": "none",
+    "borderRight": "1px solid #444",
+    "padding": "7px 16px",
+    "cursor": "pointer",
+    "fontSize": "13px",
+}
+_DEPTH_BTN_LAST = {**_DEPTH_BTN_BASE, "borderRight": "none"}
+
+
+def _depth_btn_styles(selected: int) -> tuple[dict, dict, dict]:
+    def _s(val: int) -> dict:
+        base = _DEPTH_BTN_LAST if val == 4 else _DEPTH_BTN_BASE
+        if val == selected:
+            return {
+                **base,
+                "backgroundColor": "#3b6fd4",
+                "color": "white",
+                "fontWeight": "600",
+            }
+        return {**base, "backgroundColor": "#2a2727", "color": FONT_COLOR}
+
+    return _s(2), _s(3), _s(4)
+
+
+def _bool_btn_styles(skip: bool) -> tuple[dict, dict]:
+    """Return (run_style, skip_style) for a Yes/No skip-txcat toggle."""
+    run_style = {
+        **_DEPTH_BTN_BASE,
+        "backgroundColor": "#2a2727" if skip else "#3b6fd4",
+        "color": FONT_COLOR if skip else "white",
+        "fontWeight": "400" if skip else "600",
+    }
+    skip_style = {
+        **_DEPTH_BTN_LAST,
+        "backgroundColor": "#3b6fd4" if skip else "#2a2727",
+        "color": "white" if skip else FONT_COLOR,
+        "fontWeight": "600" if skip else "400",
+    }
+    return run_style, skip_style
+
+
+@app.callback(
+    Output("settings-default-depth", "data", allow_duplicate=True),
+    Output("settings-depth-btn-2", "style", allow_duplicate=True),
+    Output("settings-depth-btn-3", "style", allow_duplicate=True),
+    Output("settings-depth-btn-4", "style", allow_duplicate=True),
+    Input("settings-depth-btn-2", "n_clicks"),
+    Input("settings-depth-btn-3", "n_clicks"),
+    Input("settings-depth-btn-4", "n_clicks"),
+    prevent_initial_call=True,
+)
+def select_depth_btn(_2, _3, _4):
+    val = int(callback_context.triggered_id.split("-")[-1])
+    return (val, *_depth_btn_styles(val))
+
+
+@app.callback(
+    Output("settings-skip-txcat-debit", "data", allow_duplicate=True),
+    Output("settings-skip-txcat-savings", "data", allow_duplicate=True),
+    Output("settings-skip-txcat-debit-no", "style", allow_duplicate=True),
+    Output("settings-skip-txcat-debit-yes", "style", allow_duplicate=True),
+    Output("settings-skip-txcat-savings-no", "style", allow_duplicate=True),
+    Output("settings-skip-txcat-savings-yes", "style", allow_duplicate=True),
+    Input("settings-skip-txcat-debit-no", "n_clicks"),
+    Input("settings-skip-txcat-debit-yes", "n_clicks"),
+    Input("settings-skip-txcat-savings-no", "n_clicks"),
+    Input("settings-skip-txcat-savings-yes", "n_clicks"),
+    State("settings-skip-txcat-debit", "data"),
+    State("settings-skip-txcat-savings", "data"),
+    prevent_initial_call=True,
+)
+def select_skip_txcat(_dn, _dy, _sn, _sy, debit_val, savings_val):
+    tid = callback_context.triggered_id
+    if "debit" in tid:
+        debit_val = "yes" in tid
+    else:
+        savings_val = "yes" in tid
+    return (
+        debit_val,
+        savings_val,
+        *_bool_btn_styles(debit_val),
+        *_bool_btn_styles(savings_val),
+    )
+
+
+@app.callback(
+    Output("settings-modal", "style"),
+    Output("settings-income-account", "value"),
+    Output("settings-expenses-account", "value"),
+    Output("settings-savings-account", "value"),
+    Output("settings-debit-account", "value"),
+    Output("settings-bank-url", "value"),
+    Output("settings-hledger-rules-debit", "value"),
+    Output("settings-hledger-rules-savings", "value"),
+    Output("settings-txcat-dir", "value"),
+    Output("settings-default-depth", "data"),
+    Output("settings-depth-btn-2", "style"),
+    Output("settings-depth-btn-3", "style"),
+    Output("settings-depth-btn-4", "style"),
+    Output("settings-skip-txcat-debit", "data"),
+    Output("settings-skip-txcat-savings", "data"),
+    Output("settings-skip-txcat-debit-no", "style"),
+    Output("settings-skip-txcat-debit-yes", "style"),
+    Output("settings-skip-txcat-savings-no", "style"),
+    Output("settings-skip-txcat-savings-yes", "style"),
+    Input("settings-btn", "n_clicks"),
+    Input("settings-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def handle_settings_modal(_, __):
+    if callback_context.triggered_id == "settings-btn":
+        depth = CFG.get("default_depth", 2)
+        skip_d = bool(CFG.get("skip_txcat_debit", False))
+        skip_s = bool(CFG.get("skip_txcat_savings", False))
+        return (
+            {"display": "block"},
+            CFG["income_account"],
+            CFG["expenses_account"],
+            CFG["savings_account"],
+            CFG["debit_account"],
+            CFG.get("bank_url", ""),
+            CFG.get("hledger_rules_debit", ""),
+            CFG.get("hledger_rules_savings", ""),
+            CFG.get("txcat_dir", ""),
+            depth,
+            *_depth_btn_styles(depth),
+            skip_d,
+            skip_s,
+            *_bool_btn_styles(skip_d),
+            *_bool_btn_styles(skip_s),
+        )
+    return ({"display": "none"},) + (no_update,) * 18
+
+
+@app.callback(
+    Output("depth-dd", "value"),
+    Output("bank-nav-link", "href"),
+    Output("import-debit-btn", "children"),
+    Output("import-savings-btn", "children"),
+    Input("settings-save", "n_clicks"),
+    State("settings-income-account", "value"),
+    State("settings-expenses-account", "value"),
+    State("settings-savings-account", "value"),
+    State("settings-debit-account", "value"),
+    State("settings-bank-url", "value"),
+    State("settings-hledger-rules-debit", "value"),
+    State("settings-hledger-rules-savings", "value"),
+    State("settings-txcat-dir", "value"),
+    State("settings-skip-txcat-debit", "data"),
+    State("settings-skip-txcat-savings", "data"),
+    State("settings-default-depth", "data"),
+    prevent_initial_call=True,
+)
+def save_settings(
+    _,
+    income,
+    expenses,
+    savings,
+    debit,
+    bank_url,
+    rules_debit,
+    rules_savings,
+    txcat_dir,
+    skip_debit,
+    skip_savings,
+    depth,
+):
+    updates = {
+        "income_account": income or CFG["income_account"],
+        "expenses_account": expenses or CFG["expenses_account"],
+        "savings_account": savings or CFG["savings_account"],
+        "debit_account": debit or CFG["debit_account"],
+        "bank_url": bank_url or "",
+        "hledger_rules_debit": rules_debit or CFG.get("hledger_rules_debit", ""),
+        "hledger_rules_savings": rules_savings or CFG.get("hledger_rules_savings", ""),
+        "txcat_dir": txcat_dir or CFG.get("txcat_dir", ""),
+        "skip_txcat_debit": bool(skip_debit),
+        "skip_txcat_savings": bool(skip_savings),
+        "default_depth": int(depth) if depth else CFG.get("default_depth", 2),
+    }
+    CFG.update(updates)
+    on_disk = {k: CFG[k] for k in _SETTINGS_DISK_KEYS}
+    CONFIG_PATH.write_text(json.dumps(on_disk, indent=2))
+    set_props("settings-modal", {"style": {"display": "none"}})
+    return (
+        CFG["default_depth"],
+        CFG["bank_url"],
+        CFG["debit_account"],
+        CFG["savings_account"],
+    )
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="hledger Finance Dashboard")
+    parser = argparse.ArgumentParser(description="hledger Dashboard")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8050)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    print(f"\n  hledger Finance Dashboard")
+    print(f"\n  hledger Dashboard")
     print(f"  Accounts : {CFG}")
     print(f"  Open     →  http://{args.host}:{args.port}\n")
     app.run(host=args.host, port=args.port, debug=args.debug)
