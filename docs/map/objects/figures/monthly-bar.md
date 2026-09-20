@@ -68,4 +68,4 @@ depending on the journal's contents.
 
 ## See
 
-- `app.py` — lines 816 to 892 hold the pivot and the builder.
+- `app.py` — lines 816 to 890 hold the pivot and the builder.

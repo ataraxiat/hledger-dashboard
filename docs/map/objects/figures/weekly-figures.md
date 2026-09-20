@@ -12,7 +12,7 @@ source: app.py
 
 Three separate views of the **same** weekly dict: one panel per expense
 sub-category, the same categories as heatmap rows, and the same categories as
-violin traces. `build_strip_figure` alone is 335 lines.
+violin traces. `build_strip_figure` alone is 324 lines.
 
 ## Why this shape
 
@@ -82,4 +82,4 @@ suppression is the reason a clientside callback exists at all.
 
 ## See
 
-- `app.py` — lines 922 to 1489 hold all three builders.
+- `app.py` — lines 922 to 1478 hold all three builders.

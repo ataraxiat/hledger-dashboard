@@ -79,4 +79,5 @@ read `_import_lock` as though it provided it.
 
 ## See
 
-- `app.py` — lines 241 to 255 declare all five.
+- `app.py` — lines 241 to 248 declare all five. `_NO_NEW_TX_MARKERS` sits just
+  below at 250 to 254 and belongs to `import-run`.

@@ -76,4 +76,4 @@ does not, the tooltip reports numbers that do not match the plot.
 
 ## See
 
-- `app.py` — lines 2518 to 2654 hold all three registrations.
+- `app.py` — lines 2518 to 2653 hold all three registrations.

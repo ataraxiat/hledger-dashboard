@@ -11,7 +11,8 @@ source: app.py
 # Refresh — `refresh()`
 
 The one callback that rebuilds the whole dashboard from the journal. Eleven
-outputs, five states, eleven hledger invocations.
+outputs, five states, ten hledger invocations — eleven on the "From Ledger
+Start" branch, which spends one more resolving the earliest date.
 
 ## Why this shape
 

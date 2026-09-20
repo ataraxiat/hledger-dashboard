@@ -80,4 +80,4 @@ configs predating the debit/savings split.
 
 ## See
 
-- `app.py` — lines 70 to 101 own the defaults, the merge and `CFG`.
+- `app.py` — lines 72 to 101 own the defaults, the merge and `CFG`.

@@ -80,4 +80,4 @@ when spending exceeded income for the period.
 
 ## See
 
-- `app.py` — lines 636 to 772 hold the class and the builder.
+- `app.py` — lines 636 to 767 hold the class and the builder.

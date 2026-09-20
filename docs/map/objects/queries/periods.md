@@ -13,8 +13,8 @@ source: app.py
 How a dropdown value and two date pickers become hledger period flags, plus
 the human label that gets stamped on every figure title.
 
-This card deliberately straddles the file: the label table is at line 103, the
-translator at 3155, and the date-picker callback at 3168. Someone adding a
+This card deliberately straddles the file: the label table is at line 104, the
+translator at 3155, and the date-picker callback at 2656. Someone adding a
 period option needs all three.
 
 ## Why this shape
@@ -33,12 +33,20 @@ double-count them into every chart.
 through, because hledger would then return cumulative balances from ledger
 start and the Sankey would be quietly wrong.
 
+And there are **two** implementations of this precedence, not one.
+`_build_period_args` is defined at 3155, below `refresh` at 2698, and `refresh`
+cannot call something defined after it runs — so it carries its own inline copy
+of the same four branches. A rule changed in one and not the other makes a
+Refresh and an Import disagree about the same dropdown value.
+
 ## Shape
 
 | Field / element | Constraint | Cite |
 |---|---|---|
 | `PERIOD_LABELS` | 8 dropdown values → human labels | `app.py#PERIOD_LABELS` |
 | `_build_period_args(period, begin, end)` | → `(argv_fragment, label)`; dates win over the dropdown | `app.py#_build_period_args` |
+| its callers | exactly one: `handle_import_modal` | `app.py#handle_import_modal` |
+| the duplicate | `refresh` inlines the same four branches | `app.py#refresh` |
 | `"from"` | resolves via `get_ledger_start_date()`; falls back to `[], "all time"` | `app.py#get_ledger_start_date` |
 | `handle_date_buttons` | clears both pickers, or sets one to today | `app.py#handle_date_buttons` |
 | the end-without-begin guard | lives in `refresh`, not here | `app.py#refresh` |
@@ -53,8 +61,10 @@ start and the Sankey would be quietly wrong.
 ## If you change this
 
 **Hits**
-- `refresh`, which calls it once and passes the result to every query — `app.py#refresh`
-- `handle_import_modal`, which calls it to scope the post-import redraw — `app.py#handle_import_modal`
+- `handle_import_modal` — its **only** caller — `app.py#handle_import_modal`
+- `refresh`, which does **not** call it and must be edited separately: the same
+  precedence is written out a second time inside it — `app.py#refresh`
+- `update_strip_plot`, which reads `PERIOD_LABELS` directly for its title — `app.py#update_strip_plot`
 - Every figure title, which interpolates the returned label — `app.py#dark_layout`
 - The period dropdown's option list in the layout, which must match the keys — `app.py:1599-2513`
 

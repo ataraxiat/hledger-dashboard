@@ -76,5 +76,6 @@ cycling list used to colour weekly categories.
 
 ## See
 
-- `app.py` — lines 116 to 166 hold the palette, 773 to 921 the layout helper
-  and the empty-state family.
+- `app.py` — lines 116 to 163 hold the palette; `dark_layout` is at 773 to 785
+  and the empty-state family is spread over 788 to 916, with the monthly-bar
+  builders interleaved between them.

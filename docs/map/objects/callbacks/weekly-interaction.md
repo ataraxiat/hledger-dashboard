@@ -10,7 +10,7 @@ source: app.py
 
 # Weekly interaction — orientation, scale, legend filter, resize
 
-Four callbacks that redraw the weekly tab from data already in the browser.
+Five callbacks that redraw the weekly tab from data already in the browser.
 None of them runs an hledger command.
 
 ## Why this shape
@@ -76,4 +76,7 @@ mode.
 
 ## See
 
-- `app.py` — lines 2675 to 3010 hold all four, plus `handle_date_buttons`.
+- `app.py` — two blocks, not one: `toggle_orientation` and `cycle_scale` at
+  2675 to 2695, then `update_sm_on_resize`, `update_strip_plot` and
+  `update_strip_filter` at 2889 to 3008. `refresh` sits between them and is a
+  different card.

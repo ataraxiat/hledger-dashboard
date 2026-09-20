@@ -78,4 +78,5 @@ lists of the same length and must stay that way.
 
 ## See
 
-- `app.py` — lines 169 to 562 hold all six.
+- `app.py` — lines 169 to 560 hold five of the six. `pivot_monthly` is the
+  outlier, at 816 to 820, next to the chart that consumes it.

@@ -2,8 +2,8 @@
 
 23 cards over one 3,477-line module plus three support files. Clustered by
 **how an editor asks**, not by where the code sits in the file: `periods`
-holds a constant from line 103, a helper from line 3155 and a callback from
-line 3168, because someone adding a period option needs all three and does not
+holds a constant from line 104, a helper from line 3155 and a callback from
+line 2656, because someone adding a period option needs all three and does not
 care that they are 3,000 lines apart.
 
 **Start at `docs/map/objects/_index.md`, open one card.** Never read this
@@ -34,9 +34,14 @@ Three rules that are not negotiable:
 2. **`status: verified` needs a date, a branch, and a citation.**
 3. **Fill *Does not hit*.** It is the section that earns the card.
 
-## The one waterfall that catches everyone
+## The two duplications that catch everyone
 
-`_stream_import` does not call `refresh`. It contains a **second copy** of the
-same figure-building sequence, so every card whose *Hits* mentions `refresh`
-mentions `_stream_import` too. Changing one and not the other is the most
-likely way to break this app, and it is invisible from either function alone.
+Both are invisible from either side alone, and both are the most likely way to
+break this app.
+
+1. **`_stream_import` does not call `refresh`.** It contains a second copy of
+   the same figure-building sequence, so every card whose *Hits* mentions
+   `refresh` mentions `_stream_import` too.
+2. **`refresh` does not call `_build_period_args`.** That helper is defined at
+   3155, below `refresh` at 2698, so `refresh` writes the same four period
+   branches out inline. `handle_import_modal` is the helper's only caller.
