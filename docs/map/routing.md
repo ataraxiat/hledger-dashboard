@@ -25,12 +25,27 @@ open the index, then one card.
 | "the rules" | hledger CSV rules files (`bank.debit.csv.rules`) — **not** txcat's categorisation rules, which live in txcat's own shelf and are invisible here |
 | "the lock" | `_import_lock`, a `threading.Lock` scoped to one process. It is not a file lock and guards nothing against a second process |
 
-## Shelves
+## Most questions land on one of these eight cards
+
+Open the card directly. Go to `objects/_index.md` only when none of these fits.
+
+| If you are asking | Open |
+|---|---|
+| what hledger command runs, or why every call carries `-n -f` | `objects/queries/hledger-command.md` |
+| where a path or a setting comes from | `objects/config/accounting-paths.md` |
+| a setting's default, or what `CFG` holds | `objects/config/config-file.md` |
+| what redraws the charts | `objects/callbacks/refresh.md` |
+| what is on the page, or what a component id belongs to | `objects/layout/page-layout.md` |
+| how state moves between callbacks | `objects/layout/stores.md` |
+| how new transactions get into the journal | `objects/import-pipeline/import-run.md` |
+| the income → savings/expenses flow chart | `objects/figures/sankey.md` |
+
+## Shelves — everything else
 
 | Go here | For |
 |---|---|
 | `CONTEXT.md` | how to walk this map; what counts as evidence here |
-| `objects/_index.md` | one line per noun — start here to find a card |
+| `objects/_index.md` | all 23 cards, one line each |
 | `objects/config/` | where a path or a setting comes from |
 | `objects/queries/` | how the app asks hledger a question and what comes back |
 | `objects/figures/` | how a DataFrame becomes a Plotly figure |

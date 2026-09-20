@@ -3,10 +3,10 @@
 An interactive web dashboard for [hledger](https://hledger.org) plain-text accounting journals. Visualises income, expenses, and savings as a live Sankey flow diagram and a monthly trend bar chart. Data is fetched on demand from the `hledger` CLI. This project was mostly written by an LLM.
 
 > **Changing the code?** Start at [`docs/map/CLAUDE.md`](docs/map/CLAUDE.md) — the system map: what
-> each thing in `app.py` is, and what else moves when you change it. `CLAUDE.md` in this directory
-> is the routing table that points there. Reading `app.py` top to bottom is the slow way round --
-> it is a few thousand lines, and the map exists so you do not have to. (No line count here on
-> purpose: a hand-written one is what drifted before, which is why there is a map at all.)
+> each thing in `app.py` is, and what else moves when you change it. Reading `app.py` top to bottom
+> is the slow way round -- it is a few thousand lines, and the map exists so you do not have to.
+> (No line count here on purpose: a hand-written one is what drifted before, which is why there is
+> a map at all.)
 
 ---
 
