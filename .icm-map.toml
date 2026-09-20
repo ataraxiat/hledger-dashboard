@@ -1,0 +1,12 @@
+# icm-map configuration. Every key is optional: autodetection already finds the
+# shelf at docs/map and infers the doc and source directories from the tree.
+# Nothing here restates what autodetection would work out on its own -- a key
+# that merely repeats the tree is a key that can drift from it.
+#
+# `clusters` is the exception, and earns its place: it is the closed set
+# check-structure.py holds every card's `cluster:` frontmatter to, so a typo
+# fails the check instead of quietly creating a seventh shelf.
+
+[map]
+root = "docs/map"
+clusters = ["config", "queries", "figures", "layout", "callbacks", "import-pipeline"]
