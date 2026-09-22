@@ -52,17 +52,31 @@ from plotly.subplots import make_subplots
 
 # ── Config
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+
+def accounting_dir() -> Path:
+    """$ACCOUNTING_DIR, or ~/Accounting when it is unset (schema § Path rules 2)."""
+    return Path(os.environ.get("ACCOUNTING_DIR") or Path.home() / "Accounting").expanduser()
+
+
+def from_config(value: str) -> Path:
+    """A path read from config.json: ~ expanded, anything relative taken from $ACCOUNTING_DIR."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else accounting_dir() / path
+
+
+CONFIG_PATH = accounting_dir() / "_config" / "hledger-dashboard" / "config.json"
+JOURNAL = Path(
+    os.environ.get("LEDGER_FILE") or accounting_dir() / "ledger" / "journal" / "main.journal"
+).expanduser()
 
 CONFIG_DEFAULTS: dict[str, str | int] = {
     "income_account": "income",
     "expenses_account": "expenses",
     "savings_account": "assets:bank:savings",
     "debit_account": "assets:bank:debit",
-    # Import pipeline (txcat → hledger import)
-    "txcat_dir": "~/Accounting/txcat",
-    "hledger_rules_debit": "~/Accounting/bank.debit.csv.rules",
-    "hledger_rules_savings": "~/Accounting/bank.savings.csv.rules",
+    # Import pipeline (txcat → hledger import). Relative to $ACCOUNTING_DIR.
+    "hledger_rules_debit": "ledger/import/bank.debit.csv.rules",
+    "hledger_rules_savings": "ledger/import/bank.savings.csv.rules",
     # Bank website for the "no new transactions" prompt
     "bank_url": "",
     # Per-account txcat bypass
@@ -133,6 +147,15 @@ PARENT_CATEGORY_COLORS = [
 
 HLEDGER_BIN = os.environ.get("HLEDGER_BIN", "hledger")
 
+
+def hledger_cmd(*args: str) -> list[str]:
+    """Every hledger call names its journal and ignores config files.
+
+    schema § Path rules 5: there is no hledger.conf, and $LEDGER_FILE may be unset when the app is
+    launched from Finder or a bare environment. -n is --no-conf on hledger 1.52.1.
+    """
+    return [HLEDGER_BIN, "-n", "-f", str(JOURNAL), *args]
+
 # ── Weekly plot formatting ─────────────────────────────────────────────────────
 WEEKLY_TITLE_FONT = dict(size=16, color=FONT_COLOR, weight="bold")
 WEEKLY_AX_TITLE_FONT = dict(size=15, color=FONT_COLOR)
@@ -180,8 +203,7 @@ def run_hledger(
     depth_flag = [f"-{depth}"] if depth is not None else []
     extra = ["--monthly"] if monthly else []
     cmd = (
-        [HLEDGER_BIN]
-        + args
+        hledger_cmd(*args)
         + period_args
         + depth_flag
         + ["--no-total", "-O", "csv"]
@@ -203,7 +225,7 @@ def get_ledger_start_date() -> str | None:
     Return the date of the second transaction in the default journal as YYYY-MM-DD,
     skipping the first entry (which sets opening balances).  Returns None on failure.
     """
-    r = subprocess.run([HLEDGER_BIN, "print"], capture_output=True, text=True)
+    r = subprocess.run(hledger_cmd("print"), capture_output=True, text=True)
     if r.returncode != 0:
         return None
     dates = []
@@ -242,14 +264,14 @@ def _stream_import(
     """
     global _import_done, _import_no_new_tx, _import_result
 
-    rules = str(Path(CFG[f"hledger_rules_{source}"]).expanduser())
+    rules = str(from_config(CFG[f"hledger_rules_{source}"]))
     skip_txcat = bool(CFG.get(f"skip_txcat_{source}", False))
 
     steps = []
     if not skip_txcat:
-        txcat_dir = str(Path(CFG["txcat_dir"]).expanduser())
-        steps.append((["txcat", "auto", "--source", source], txcat_dir))
-    steps.append(([HLEDGER_BIN, "import", rules], None))
+        # txcat finds its own config through $ACCOUNTING_DIR, so it needs no cwd of its own.
+        steps.append((["txcat", "auto", "--source", source], None))
+    steps.append((hledger_cmd("import", rules), None))
 
     _import_log.append(f"Starting import from {source}…")
     aborted = False
@@ -426,7 +448,7 @@ def run_hledger_weekly(
 ) -> tuple[pd.DataFrame, str]:
     """Run hledger balance with --weekly --average for one account prefix."""
     cmd = (
-        [HLEDGER_BIN, "bal", account]
+        hledger_cmd("bal", account)
         + period_args
         + [f"-{depth}", "--weekly", "--average", "--no-total", "-O", "csv"]
     )
@@ -485,7 +507,7 @@ def run_hledger_register_full(
     Each dict: {date, description, account, amount}.
     No depth flag — we want full transaction detail.
     """
-    cmd = [HLEDGER_BIN, "register", account] + period_args + ["-O", "csv"]
+    cmd = hledger_cmd("register", account) + period_args + ["-O", "csv"]
     cmd_str = "▶ " + " ".join(cmd)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -1964,7 +1986,12 @@ app.layout = html.Div(
                                         "fontSize": "13px",
                                         "whiteSpace": "pre",
                                     },
-                                    children="Enter a hledger command above and press Run (or hit Enter).",
+                                    children=(
+                                        "Enter a hledger command above and press Run (or hit "
+                                        "Enter). The journal is already selected — a -f you "
+                                        "type here adds a second journal file rather than "
+                                        "replacing it."
+                                    ),
                                 ),
                             ],
                         ),
@@ -2368,7 +2395,6 @@ app.layout = html.Div(
                                 ("bank-url", "Bank website URL"),
                                 ("hledger-rules-debit", "hledger rules — debit"),
                                 ("hledger-rules-savings", "hledger rules — savings"),
-                                ("txcat-dir", "txcat directory"),
                             ]
                         ],
                         *[
@@ -3002,7 +3028,7 @@ def run_shell(_btn, _enter, cmd_str):
         parts = parts[1:]
     if not parts:
         return "⚠ No command given."
-    cmd = [HLEDGER_BIN] + parts
+    cmd = hledger_cmd(*parts)
     header = "▶ " + " ".join(cmd) + "\n"
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -3240,7 +3266,6 @@ _SETTINGS_DISK_KEYS = [
     "bank_url",
     "hledger_rules_debit",
     "hledger_rules_savings",
-    "txcat_dir",
     "skip_txcat_debit",
     "skip_txcat_savings",
     "default_depth",
@@ -3341,7 +3366,6 @@ def select_skip_txcat(_dn, _dy, _sn, _sy, debit_val, savings_val):
     Output("settings-bank-url", "value"),
     Output("settings-hledger-rules-debit", "value"),
     Output("settings-hledger-rules-savings", "value"),
-    Output("settings-txcat-dir", "value"),
     Output("settings-default-depth", "data"),
     Output("settings-depth-btn-2", "style"),
     Output("settings-depth-btn-3", "style"),
@@ -3370,7 +3394,6 @@ def handle_settings_modal(_, __):
             CFG.get("bank_url", ""),
             CFG.get("hledger_rules_debit", ""),
             CFG.get("hledger_rules_savings", ""),
-            CFG.get("txcat_dir", ""),
             depth,
             *_depth_btn_styles(depth),
             skip_d,
@@ -3378,7 +3401,7 @@ def handle_settings_modal(_, __):
             *_bool_btn_styles(skip_d),
             *_bool_btn_styles(skip_s),
         )
-    return ({"display": "none"},) + (no_update,) * 18
+    return ({"display": "none"},) + (no_update,) * 17
 
 
 @app.callback(
@@ -3394,7 +3417,6 @@ def handle_settings_modal(_, __):
     State("settings-bank-url", "value"),
     State("settings-hledger-rules-debit", "value"),
     State("settings-hledger-rules-savings", "value"),
-    State("settings-txcat-dir", "value"),
     State("settings-skip-txcat-debit", "data"),
     State("settings-skip-txcat-savings", "data"),
     State("settings-default-depth", "data"),
@@ -3409,7 +3431,6 @@ def save_settings(
     bank_url,
     rules_debit,
     rules_savings,
-    txcat_dir,
     skip_debit,
     skip_savings,
     depth,
@@ -3422,13 +3443,13 @@ def save_settings(
         "bank_url": bank_url or "",
         "hledger_rules_debit": rules_debit or CFG.get("hledger_rules_debit", ""),
         "hledger_rules_savings": rules_savings or CFG.get("hledger_rules_savings", ""),
-        "txcat_dir": txcat_dir or CFG.get("txcat_dir", ""),
         "skip_txcat_debit": bool(skip_debit),
         "skip_txcat_savings": bool(skip_savings),
         "default_depth": int(depth) if depth else CFG.get("default_depth", 2),
     }
     CFG.update(updates)
     on_disk = {k: CFG[k] for k in _SETTINGS_DISK_KEYS}
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(on_disk, indent=2))
     set_props("settings-modal", {"style": {"display": "none"}})
     return (

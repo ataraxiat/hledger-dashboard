@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-#  install.sh  —  sets up the hledger Finance Dashboard in a venv
+#  install.sh  —  sets up the hledger Finance Dashboard (deps via uv)
 #
 #  Usage:
 #    chmod +x install.sh
@@ -10,9 +10,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-VENV_DIR="$(dirname "$0")/venv"
-APP_DIR="$(dirname "$0")"
-CONFIG_FILE="$APP_DIR/config.json"
+ACCOUNTING_DIR="${ACCOUNTING_DIR:-$HOME/Accounting}"
+CONFIG_FILE="$ACCOUNTING_DIR/_config/hledger-dashboard/config.json"
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASSETS_DIR="$APP_DIR/assets"
 CSS_FILE="$ASSETS_DIR/dashboard.css"
 RUN_AFTER=false
@@ -26,7 +26,7 @@ for arg in "$@"; do
         --help|-h)
             echo "Usage: $0 [--run] [--reconfigure]"
             echo "  --run           Launch the server immediately after setup"
-            echo "  --reconfigure   Re-prompt for account names only (skip venv/deps)"
+            echo "  --reconfigure   Re-prompt for account names only (skip deps)"
             exit 0 ;;
     esac
 done
@@ -82,6 +82,7 @@ configure_accounts() {
     read -r -p "  Debit account    [$default_debit]: " debit_account
     debit_account="${debit_account:-$default_debit}"
 
+    mkdir -p "$(dirname "$CONFIG_FILE")"
     cat > "$CONFIG_FILE" << ENDJSON
 {
   "income_account":   "$income_account",
@@ -103,7 +104,7 @@ ENDJSON
 # --reconfigure: update config only, then exit
 if $RECONFIGURE; then
     configure_accounts
-    echo "  Re-run  python app.py  to pick up the new account names."
+    echo "  Re-run  uv run python app.py  to pick up the new account names."
     echo ""
     exit 0
 fi
@@ -154,15 +155,6 @@ else
     configure_accounts
 fi
 
-# ── Create / reuse virtual environment ────────────────────────────────────────
-if [ -d "$VENV_DIR" ]; then
-    echo "✓  Virtual environment already exists at $VENV_DIR — skipping creation"
-else
-    echo "→  Creating virtual environment at $VENV_DIR …"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
-    echo "✓  Virtual environment created"
-fi
-
 # ── Create assets/ directory and write CSS ────────────────────────────────────
 mkdir -p "$ASSETS_DIR"
 
@@ -193,41 +185,39 @@ ENDCSS
     echo "✓  assets/dashboard.css created"
 fi
 
-# ── Activate venv and install deps ────────────────────────────────────────────
-# shellcheck disable=SC1091
-source "$VENV_DIR/bin/activate"
-
-echo "→  Installing Python dependencies …"
-pip install --quiet --upgrade pip
-pip install --quiet -r "$APP_DIR/requirements.txt"
-
-echo "✓  All dependencies installed"
+# ── Dependencies (uv) ─────────────────────────────────────────────────────────
+if ! command -v uv &>/dev/null; then
+    echo "✗  uv is required: https://docs.astral.sh/uv/"
+    exit 1
+fi
+echo "→  Syncing dependencies with uv …"
+(cd "$APP_DIR" && uv sync)
+echo "✓  Dependencies installed"
 
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo "  Installation complete!"
 echo ""
 echo "  To start the dashboard:"
-echo "    source venv/bin/activate"
-echo "    python app.py"
+echo "    uv run python app.py"
 echo ""
 echo "  Then open  →  http://127.0.0.1:8050"
 echo ""
 echo "  Optional flags:"
-echo "    python app.py --port 9090       # change port"
-echo "    python app.py --debug           # enable hot-reload"
-echo "    python app.py --host 0.0.0.0    # expose on LAN"
+echo "    uv run python app.py --port 9090       # change port"
+echo "    uv run python app.py --debug           # enable hot-reload"
+echo "    uv run python app.py --host 0.0.0.0    # expose on LAN"
 echo ""
 echo "  To change account names:"
 echo "    ./install.sh --reconfigure"
 echo ""
 echo "  Environment variables:"
-echo "    HLEDGER_BIN=/path/to/hledger python app.py"
+echo "    HLEDGER_BIN=/path/to/hledger uv run python app.py"
 echo "════════════════════════════════════════════════════════"
 echo ""
 
 # ── Optionally launch ─────────────────────────────────────────────────────────
 if $RUN_AFTER; then
     echo "Launching dashboard …"
-    python "$APP_DIR/app.py"
+    (cd "$APP_DIR" && uv run python app.py)
 fi

@@ -1,0 +1,12 @@
+{
+  "income_account": "income",
+  "expenses_account": "expenses",
+  "savings_account": "assets:bank:savings",
+  "debit_account": "assets:bank:debit",
+  "bank_url": "",
+  "hledger_rules_debit": "ledger/import/bank.debit.csv.rules",
+  "hledger_rules_savings": "ledger/import/bank.savings.csv.rules",
+  "skip_txcat_debit": false,
+  "skip_txcat_savings": false,
+  "default_depth": 2
+}
