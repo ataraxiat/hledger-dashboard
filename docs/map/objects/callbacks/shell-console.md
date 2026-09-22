@@ -50,7 +50,7 @@ the app issues itself.
 ## If you change this
 
 **Hits**
-- Nothing else in the app. It writes one output and reads no store — `app.py:1599-2513`
+- Nothing else in the app. It writes one output and reads no store — `app.py:1646-2560`
 
 **Does not hit**
 - Any figure or store. Running a command here changes no chart — `app.py#refresh`

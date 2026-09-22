@@ -54,7 +54,7 @@ inputs write the same modal.
 **Hits**
 - `filter_register_data`, its only filtering helper — `app.py#filter_register_data`
 - The `customdata` / `customtext` contract in all three weekly builders — `app.py#build_small_multiples_figure`, `app.py#build_heatmap_figure`, `app.py#build_strip_figure`
-- `register-data-store`'s `{txns, cmd}` shape — `app.py:2007`
+- `register-data-store`'s `{txns, cmd}` shape — `app.py:2054`
 
 **Does not hit**
 - hledger. No command is run here; the string shown in the modal came from the

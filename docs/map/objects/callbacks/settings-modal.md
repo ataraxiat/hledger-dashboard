@@ -60,7 +60,7 @@ control.
 - `CONFIG_DEFAULTS` and `_SETTINGS_DISK_KEYS`, which must both gain any new
   key — `app.py#CONFIG_DEFAULTS`, `app.py#_SETTINGS_DISK_KEYS`
 - `config.example.json` and the subset test that guards it — `tests/test_paths.py`
-- The layout's settings modal, which needs one widget per key — `app.py:1599-2513`
+- The layout's settings modal, which needs one widget per key — `app.py:1646-2560`
 - Its four direct outputs: the depth dropdown, the bank link, and the two
   import button captions — `app.py#save_settings`
 

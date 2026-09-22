@@ -55,7 +55,7 @@ depending on the journal's contents.
 - The Sankey. It uses the same `bal` runner but a different period granularity
   and its own builder — `app.py#build_sankey`
 - Any store. The bar chart is stateless; nothing about it is kept in a
-  `dcc.Store` for a later callback — `app.py:2003-2011`
+  `dcc.Store` for a later callback — `app.py:2050-2058`
 
 ## Surfaces
 

@@ -62,7 +62,7 @@ suppression is the reason a clientside callback exists at all.
 - `handle_tx_popup`, which reads the clicked point's `customdata` to resolve a
   week — `app.py#handle_tx_popup`
 - The violin hover JS, which re-attaches handlers whenever the strip figure or
-  scale mode changes — `app.py:2547-2653`
+  scale mode changes — `app.py:2594-2700`
 
 **Does not hit**
 - `hledger_cmd` or the runners. All three are pure functions of an

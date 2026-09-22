@@ -53,10 +53,10 @@ is the point and also the trap.
 
 **Hits**
 - Every variant spread from the dict you edited — `app.py#STYLE_BTN_SMALL_WARN`
-- The layout, which applies them at construction — `app.py:1599-2513`
+- The layout, which applies them at construction — `app.py:1646-2560`
 - `save_settings` and the button-state helpers, which return styles as callback
   outputs — `app.py#save_settings`, `app.py#_depth_btn_styles`
-- The violin tooltip's JS, which positions a div this dict styles — `app.py:2547-2653`
+- The violin tooltip's JS, which positions a div this dict styles — `app.py:2594-2700`
 
 **Does not hit**
 - Any figure. Plotly draws to SVG/canvas and reads none of these — `app.py#dark_layout`
