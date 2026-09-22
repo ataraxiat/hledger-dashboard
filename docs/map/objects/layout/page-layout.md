@@ -30,12 +30,12 @@ clicked.
 
 | Field / element | Constraint | Cite |
 |---|---|---|
-| `app.layout` | a single `html.Div`; ~55 ids | `app.py:1599-2513` |
-| graphs | `sankey-graph`, `bar-graph`, `sm-graph`, `hm-graph`, `strip-graph` | `app.py:1599-2513` |
-| modals | `tx-modal`, `import-source-modal`, `bank-nav-modal`, `settings-modal` | `app.py:1599-2513` |
-| controls | `period-dd`, `depth-dd`, `begin-dp`, `end-dp`, `refresh-btn`, `import-btn` | `app.py:1599-2513` |
-| stores | nine of them | `app.py:2003-2011` |
-| the poll timer | `import-poll`, an interval component, disabled until an import starts | `app.py:2012` |
+| `app.layout` | a single `html.Div`; ~55 ids | `app.py:1646-2560` |
+| graphs | `sankey-graph`, `bar-graph`, `sm-graph`, `hm-graph`, `strip-graph` | `app.py:1646-2560` |
+| modals | `tx-modal`, `import-source-modal`, `bank-nav-modal`, `settings-modal` | `app.py:1646-2560` |
+| controls | `period-dd`, `depth-dd`, `begin-dp`, `end-dp`, `refresh-btn`, `import-btn` | `app.py:1646-2560` |
+| stores | nine of them | `app.py:2050-2058` |
+| the poll timer | `import-poll`, an interval component, disabled until an import starts | `app.py:2059` |
 
 This card carries a **line range, not a symbol**. `app.layout` is an attribute
 assignment and has no anchor a checker can resolve, so this range will drift as
@@ -56,7 +56,7 @@ code above it moves. Treat it as approximate and re-verify it with
 **Hits**
 - Any callback naming a renamed or removed id — Dash raises at import, not at
   click time — `app.py#refresh`
-- The three clientside callbacks, which look up `sm-graph` by id in the DOM — `app.py:2518-2546`
+- The three clientside callbacks, which look up `sm-graph` by id in the DOM — `app.py:2565-2593`
 - `assets/dashboard.css`, which targets classes and ids set here — `assets/dashboard.css`
 
 **Does not hit**

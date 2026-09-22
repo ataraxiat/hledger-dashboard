@@ -30,13 +30,13 @@ them to a 7-day window in Python rather than running a new query per click.
 
 | Field / element | Constraint | Cite |
 |---|---|---|
-| `strip-data-store` | the weekly dict; read by three figures and the popup | `app.py:2006` |
-| `register-data-store` | `{txns, cmd}` — every register row for the period | `app.py:2007` |
-| `strip-orientation` | `"v"` or `"h"` | `app.py:2004` |
-| `violin-scale` | `"linear"`, `"log"` or `"transform"` | `app.py:2005` |
-| `strip-legend-meta`, `strip-parent-filter` | legend state and hidden categories | `app.py:2008-2009` |
-| `sm-width-store`, `sm-period-label-store` | measured pixel width and the period label | `app.py:2010-2011` |
-| `clear-signal` | a counter used to reset the date pickers | `app.py:2003` |
+| `strip-data-store` | the weekly dict; read by three figures and the popup | `app.py:2053` |
+| `register-data-store` | `{txns, cmd}` — every register row for the period | `app.py:2054` |
+| `strip-orientation` | `"v"` or `"h"` | `app.py:2051` |
+| `violin-scale` | `"linear"`, `"log"` or `"transform"` | `app.py:2052` |
+| `strip-legend-meta`, `strip-parent-filter` | legend state and hidden categories | `app.py:2055-2056` |
+| `sm-width-store`, `sm-period-label-store` | measured pixel width and the period label | `app.py:2057-2058` |
+| `clear-signal` | a counter used to reset the date pickers | `app.py:2050` |
 
 All nine are declared in one block. The two data stores are written only by
 `refresh` and `poll_import`; the seven flags are written by their own toggles.
@@ -55,7 +55,7 @@ All nine are declared in one block. The two data stores are written only by
 - `refresh` and `poll_import`, the only two writers of the data stores — `app.py#refresh`, `app.py#poll_import`
 - All four weekly-interaction callbacks, which read them — `app.py#update_strip_plot`
 - `handle_tx_popup`, which takes both data stores as `State` — `app.py#handle_tx_popup`
-- The width-measuring clientside callback, which sets `sm-width-store` from JS — `app.py:2529-2546`
+- The width-measuring clientside callback, which sets `sm-width-store` from JS — `app.py:2576-2593`
 
 **Does not hit**
 - The journal. Nothing in a store is persisted anywhere; a page reload empties

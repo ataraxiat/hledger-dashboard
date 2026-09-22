@@ -55,9 +55,9 @@ mode.
 **Hits**
 - `build_strip_figure` and `build_small_multiples_figure`, the only functions
   they call — `app.py#build_strip_figure`, `app.py#build_small_multiples_figure`
-- The five stores they read and write — `app.py:2004-2010`
+- The five stores they read and write — `app.py:2051-2057`
 - The violin hover JS, which re-binds whenever the strip figure or scale
-  changes — `app.py:2547-2653`
+  changes — `app.py:2594-2700`
 
 **Does not hit**
 - hledger. Adding a query here would be the change that breaks the tab's

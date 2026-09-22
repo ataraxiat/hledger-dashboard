@@ -59,7 +59,7 @@ lists of the same length and must stay that way.
   entry against the register store — `app.py#handle_tx_popup`
 - The Sankey and the monthly bar, both of which consume `normalise` output — `app.py#build_sankey`, `app.py#pivot_monthly`
 - `strip-data-store` and `register-data-store`, whose contents are these
-  shapes serialised to the browser — `app.py:2006-2007`
+  shapes serialised to the browser — `app.py:2053-2054`
 
 **Does not hit**
 - `hledger_cmd`. Changing a shape does not change what is asked for; the argv

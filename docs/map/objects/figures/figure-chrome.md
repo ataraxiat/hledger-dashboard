@@ -58,7 +58,7 @@ cycling list used to colour weekly categories.
 - Every figure builder, all six of which call `dark_layout` directly or via an
   empty state — `app.py#build_sankey`, `app.py#build_monthly_bar_figure`, `app.py#build_strip_figure`
 - The initial page render, which seeds every graph with an empty figure before
-  any refresh happens — `app.py:1599-2513`
+  any refresh happens — `app.py:1646-2560`
 
 **Does not hit**
 - `assets/dashboard.css`. Plotly figures are canvas/SVG and are not styled by

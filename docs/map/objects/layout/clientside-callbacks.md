@@ -36,9 +36,9 @@ would be either impossible or visibly slow.
 
 | Field / element | Constraint | Cite |
 |---|---|---|
-| tab resize nudge | `Input("tabs","value")` → `_resize-dummy`; 60 ms `setTimeout` | `app.py:2518-2528` |
-| width measurer | `Input("sm-graph","id")` → `sm-width-store`; also adds a resize listener | `app.py:2529-2546` |
-| violin hover | `Input` on the strip figure and the scale mode | `app.py:2547-2653` |
+| tab resize nudge | `Input("tabs","value")` → `_resize-dummy`; 60 ms `setTimeout` | `app.py:2565-2575` |
+| width measurer | `Input("sm-graph","id")` → `sm-width-store`; also adds a resize listener | `app.py:2576-2593` |
+| violin hover | `Input` on the strip figure and the scale mode | `app.py:2594-2700` |
 | `POWER` | `0.3` — duplicated here and in `build_strip_figure` | `app.py#build_strip_figure` |
 
 The power constant exists in **both** the Python builder and this JavaScript.

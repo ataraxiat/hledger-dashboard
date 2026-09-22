@@ -23,6 +23,9 @@ Requirements
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import io
 import json
 import math
@@ -31,6 +34,7 @@ import re
 import shlex
 import subprocess
 import threading
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -56,6 +60,45 @@ from plotly.subplots import make_subplots
 def accounting_dir() -> Path:
     """$ACCOUNTING_DIR, or ~/Accounting when it is unset (schema § Path rules 2)."""
     return Path(os.environ.get("ACCOUNTING_DIR") or Path.home() / "Accounting").expanduser()
+
+
+def journal_lock_path() -> Path:
+    """The lock ledger-agent's promote gate takes before it writes the journal.
+
+    Contract, not an import: ledger-agent derives the same path in
+    src/ledger_agent/paths.py:journal_lock_path(). Keep the two in step — if they drift, each
+    side takes a lock the other never contends for and the serialisation silently stops working.
+    Keyed by workspace, so a test workspace never serialises against the real one.
+    """
+    run_dir = Path(os.environ.get("LEDGER_AGENT_RUN_DIR") or Path.home() / ".ledger-agent" / "run")
+    digest = hashlib.sha256(str(accounting_dir().resolve()).encode()).hexdigest()[:8]
+    return run_dir.expanduser() / f"journal-{digest}.lock"
+
+
+@contextlib.contextmanager
+def journal_lock(timeout_s: float = 120.0):
+    """Serialise this import against ledger-agent's promote. Never nested.
+
+    flock(2) locks attach to the open file description, so a second open() in this same process
+    takes a *different* description and does not inherit this lock: nesting polls until the
+    timeout and then raises. Nothing here is re-entrant.
+    """
+    path = journal_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_s
+    with path.open("w") as handle:
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"journal lock held for more than {timeout_s}s")
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def from_config(value: str) -> Path:
@@ -261,6 +304,9 @@ def _stream_import(
     Run the import pipeline in a background thread.  Progress is written to the
     module-level _import_log list; the poll_import callback reads it every 400 ms.
     source is "debit" or "savings".
+
+    Holds the shared journal lock for the whole pipeline, so a ledger-agent promote cannot
+    interleave with `hledger import`.
     """
     global _import_done, _import_no_new_tx, _import_result
 
@@ -278,38 +324,39 @@ def _stream_import(
     child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
 
     try:
-        for cmd, cwd in steps:
-            _import_log.append("▶ " + " ".join(cmd))
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=cwd,
-                    env=child_env,
-                )
-            except (FileNotFoundError, OSError) as exc:
-                _import_log.append(f"⚠ Could not start process: {exc}")
-                aborted = True
-                break
-
-            while True:
-                raw_line = proc.stdout.readline()
-                if not raw_line:
+        with journal_lock():
+            for cmd, cwd in steps:
+                _import_log.append("▶ " + " ".join(cmd))
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        cwd=cwd,
+                        env=child_env,
+                    )
+                except (FileNotFoundError, OSError) as exc:
+                    _import_log.append(f"⚠ Could not start process: {exc}")
+                    aborted = True
                     break
-                stripped = raw_line.rstrip()
-                if any(m in stripped for m in _NO_NEW_TX_MARKERS):
-                    _import_no_new_tx = True
-                _import_log.append(stripped)
 
-            proc.wait()
-            if proc.returncode != 0:
-                _import_log.append(
-                    f"⚠ Process exited {proc.returncode} — import aborted."
-                )
-                aborted = True
-                break
+                while True:
+                    raw_line = proc.stdout.readline()
+                    if not raw_line:
+                        break
+                    stripped = raw_line.rstrip()
+                    if any(m in stripped for m in _NO_NEW_TX_MARKERS):
+                        _import_no_new_tx = True
+                    _import_log.append(stripped)
+
+                proc.wait()
+                if proc.returncode != 0:
+                    _import_log.append(
+                        f"⚠ Process exited {proc.returncode} — import aborted."
+                    )
+                    aborted = True
+                    break
     finally:
         _import_lock.release()
 

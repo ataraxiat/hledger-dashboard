@@ -66,7 +66,7 @@ Refresh and an Import disagree about the same dropdown value.
   precedence is written out a second time inside it — `app.py#refresh`
 - `update_strip_plot`, which reads `PERIOD_LABELS` directly for its title — `app.py#update_strip_plot`
 - Every figure title, which interpolates the returned label — `app.py#dark_layout`
-- The period dropdown's option list in the layout, which must match the keys — `app.py:1599-2513`
+- The period dropdown's option list in the layout, which must match the keys — `app.py:1646-2560`
 
 **Does not hit**
 - `JOURNAL`. A period narrows what is read out of the journal; it never
