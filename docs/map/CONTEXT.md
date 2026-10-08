@@ -56,7 +56,7 @@ moved config, journal and rules resolution onto `$ACCOUNTING_DIR`.
 |---|---|
 | **live** | every card in this map except the two below |
 | **leftover** | the singular `hledger_rules` config key. It is not in `CONFIG_DEFAULTS` and not writable from the settings modal; it survives only as a back-compat rename inside `load_config` for configs written before the debit/savings split |
-| **ghost** | the shared journal file lock. P1 of the ledger-agent umbrella spec (§7) gives the journal a lock shared with that project's `promote`. Nothing implements it yet — `_import_lock` is a `threading.Lock` and serialises imports **within one process only** |
+| **ghost** | the shared journal file lock. ledger-agent's P1 (`docs/lanes/p1-harness-core/CONTEXT.md`) gives the journal a lock shared with that project's `promote`. Nothing implements it yet — `_import_lock` is a `threading.Lock` and serialises imports **within one process only** |
 
 ## The walk test this map is held to
 

@@ -43,7 +43,7 @@ failed still delivers whatever it did build.
 | the reset | performed by the starting callback, before the thread launches | `app.py#handle_import_modal` |
 
 **Ghost, not present:** a journal file lock shared with `ledger-agent`'s
-promote is planned for P1 (umbrella spec §7). Nothing implements it. Do not
+promote is planned for P1 (ledger-agent's `docs/lanes/p1-harness-core/CONTEXT.md`). Nothing implements it. Do not
 read `_import_lock` as though it provided it.
 
 ## Connected to
